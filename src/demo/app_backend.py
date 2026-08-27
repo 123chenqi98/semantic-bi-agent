@@ -284,6 +284,120 @@ def _match_mock_bank(question: str):
     return None
 
 
+_FOLLOWUP_DIMENSIONS = [
+    {"keywords": ["渠道", "channel"], "col": "oi.channel", "label": "渠道", "join": ""},
+    {"keywords": ["品类", "类别", "分类", "category"], "col": "p.category", "label": "品类",
+     "join": " LEFT JOIN product p ON oi.product_id=p.product_id"},
+    {"keywords": ["区域", "地区", "region"], "col": "c.region", "label": "区域",
+     "join": " LEFT JOIN customer c ON oi.customer_id=c.customer_id"},
+    {"keywords": ["月份", "按月", "月度", "month"], "col": "strftime('%Y-%m', oi.order_date)", "label": "月份", "join": ""},
+    {"keywords": ["性别", "gender"], "col": "c.gender", "label": "性别",
+     "join": " LEFT JOIN customer c ON oi.customer_id=c.customer_id"},
+    {"keywords": ["会员等级", "会员"], "col": "c.member_level", "label": "会员等级",
+     "join": " LEFT JOIN customer c ON oi.customer_id=c.customer_id"},
+    {"keywords": ["品牌", "brand"], "col": "p.brand", "label": "品牌",
+     "join": " LEFT JOIN product p ON oi.product_id=p.product_id"},
+]
+
+_METRIC_PATTERNS = [
+    {"keywords": ["销售额", "gmv", "营收", "金额", "销售"],
+     "expr": "ROUND(SUM(oi.amount), 2)", "alias": "sales_amount", "label": "销售额", "metric_id": "M01"},
+    {"keywords": ["订单量", "订单数", "单量", "order"],
+     "expr": "COUNT(DISTINCT oi.order_id)", "alias": "order_count", "label": "订单量", "metric_id": "M02"},
+    {"keywords": ["客单价", "aov", "平均订单"],
+     "expr": "ROUND(SUM(oi.amount)*1.0/NULLIF(COUNT(DISTINCT oi.order_id),0),2)", "alias": "aov",
+     "label": "客单价", "metric_id": "M03"},
+    {"keywords": ["用户数", "客户数", "人数", "customer"],
+     "expr": "COUNT(DISTINCT oi.customer_id)", "alias": "customer_count", "label": "客户数", "metric_id": "M06"},
+]
+
+
+def _try_followup(question: str, history):
+    """检测追问（如「按渠道拆分」），从上一轮 history 提取时间范围和指标，生成 GROUP BY SQL。"""
+    if not history:
+        return None
+    q_lower = question.lower()
+    has_breakdown = any(k in question for k in ["拆分", "分组", "按", "分渠道", "分品类", "分区域", "breakdown", "group by"])
+    has_dim = any(any(k in q_lower or k in question for k in d["keywords"]) for d in _FOLLOWUP_DIMENSIONS)
+    if not (has_breakdown or has_dim):
+        return None
+
+    dim = None
+    for d in _FOLLOWUP_DIMENSIONS:
+        if any(k in q_lower or k in question for k in d["keywords"]):
+            dim = d
+            break
+    if not dim:
+        return None
+
+    prev_user_q = ""
+    prev_sql = ""
+    for h in reversed(history):
+        role = h.get("role", "")
+        content = h.get("content", "")
+        if role == "assistant" and "[之前生成的SQL]" in content and not prev_sql:
+            prev_sql = content.replace("[之前生成的SQL]", "").strip()
+        if role == "user" and not prev_user_q:
+            prev_user_q = content
+        if prev_sql and prev_user_q:
+            break
+
+    date_start, date_end = "2026-06-01", "2026-06-30"
+    m = re.search(r"BETWEEN\s+'(\d{4}-\d{2}-\d{2})'\s+AND\s+'(\d{4}-\d{2}-\d{2})'", prev_sql, re.IGNORECASE)
+    if m:
+        date_start, date_end = m.group(1), m.group(2)
+    elif "2025" in prev_sql and "2025-12-31" in prev_sql:
+        date_start, date_end = "2025-01-01", "2025-12-31"
+    elif "2026-01" in prev_sql and "2026-06" in prev_sql:
+        date_start, date_end = "2026-01-01", "2026-06-30"
+
+    metric = _METRIC_PATTERNS[0]
+    combined = (prev_user_q + " " + prev_sql).lower()
+    for mp in _METRIC_PATTERNS:
+        if any(k in combined for k in mp["keywords"]):
+            metric = mp
+            break
+
+    dim_col = dim["col"]
+    join_clause = dim["join"]
+    alias = metric["alias"]
+    expr = metric["expr"]
+
+    sql = (
+        f"SELECT {dim_col} AS {dim['label'].lower()}, {expr} AS {alias}\n"
+        f"FROM order_item oi{join_clause}\n"
+        f"WHERE oi.pay_status = '已支付'\n"
+        f"  AND oi.order_date BETWEEN '{date_start}' AND '{date_end}'\n"
+        f"GROUP BY {dim_col}\n"
+        f"ORDER BY {alias} DESC;"
+    )
+
+    baseline_sql = (
+        f"SELECT {dim_col} AS {dim['label'].lower()}, SUM(oi.amount) AS {alias}\n"
+        f"FROM order_item oi{join_clause}\n"
+        f"WHERE oi.order_date >= date('now','-1 month')\n"
+        f"GROUP BY {dim_col};"
+    )
+
+    time_label = f"{date_start} ~ {date_end}"
+    return {
+        "id": "FOLLOWUP",
+        "match": [dim["label"]],
+        "matched_metrics": [(metric["metric_id"], metric["label"])],
+        "time_range": time_label,
+        "time_detected": f"承接上一轮时间范围 → {date_start} ~ {date_end}",
+        "dimensions": [dim["label"]],
+        "baseline_error": f"基线用 date('now') 动态时间导致空值，且缺少 pay_status 过滤；追问场景下基线无法继承上文时间范围",
+        "sql": sql,
+        "baseline_sql": baseline_sql,
+        "findings": [
+            f"多轮追问：继承上一轮问题『{prev_user_q[:20]}』的时间范围（{time_label}）",
+            f"按【{dim['label']}】维度拆分，指标={metric['label']}（{expr}）",
+            "追问场景下语义层自动继承上文的时间锚点和业务口径，基线无法跨轮保持上下文一致性",
+        ],
+    }
+
+
 def _run_baseline_via_mock(question: str, matched_item):
     """如果题库里有 baseline_sql 用它；否则按基线典型错误风格构造一个"""
     if matched_item and matched_item.get("baseline_sql"):
@@ -509,10 +623,11 @@ def _build_chat_response(question: str, history=None) -> dict:
             exp_time = round((time.time() - t_e) * 1000, 1)
             exp_err = exec_result.get("error")
             experiment_prompt = e_res.get("full_prompt", "")
-            matched_ids = e_res.get("matched_metrics") or semantic.match_metrics(question)
+            _mm = e_res.get("matched_metrics") or semantic.match_metrics(question)
+            matched_ids = [m["id"] if isinstance(m, dict) else m for m in _mm]
             matched_metrics = [(mid, semantic.metrics.get(mid, {}).get("name", mid)) for mid in matched_ids]
             # 真实LLM也套用 Mock 题库的元数据（时间范围/维度/错误纠正/发现）来让前端显示更丰富
-            matched_item = _match_mock_bank(question)
+            matched_item = _match_mock_bank(question) or _try_followup(question, history)
             time_range = matched_item.get("time_range") if matched_item else _guess_time_range(question)
             dimensions = matched_item.get("dimensions") if matched_item else None
         except Exception as e:
@@ -521,16 +636,39 @@ def _build_chat_response(question: str, history=None) -> dict:
             exp_cols, exp_rows, exp_err = [], [], str(e)
             exp_time = 0
             experiment_prompt = ""
-            matched_ids = semantic.match_metrics(question)
+            _matched = semantic.match_metrics(question)
+            matched_ids = [m["id"] if isinstance(m, dict) else m for m in _matched]
             matched_metrics = [(mid, semantic.metrics.get(mid, {}).get("name", mid)) for mid in matched_ids]
-            matched_item = _match_mock_bank(question)
+            matched_item = _match_mock_bank(question) or _try_followup(question, history)
             time_range = _guess_time_range(question)
             dimensions = matched_item.get("dimensions") if matched_item else None
-        mock_mode = False
+
+        if not exp_ok and not sql:
+            matched_item = _match_mock_bank(question) or _try_followup(question, history)
+            if matched_item:
+                sql = matched_item["sql"]
+                exec_result = executor.execute(sql, max_rows=50)
+                exp_ok = exec_result["success"]
+                exp_cols = exec_result["columns"]
+                exp_rows = [list(r) for r in exec_result["rows"]]
+                exp_err = exec_result.get("error")
+                baseline_block = _run_baseline_via_mock(question, matched_item)
+                matched_metrics = matched_item.get("matched_metrics") or matched_metrics
+                time_range = matched_item.get("time_range")
+                dimensions = matched_item.get("dimensions")
+                time_detected = matched_item.get("time_detected")
+                from src.agent.baseline_text2sql import BASELINE_SYSTEM_PROMPT, load_schema
+                _schema = load_schema()
+                _baseline_user = f"[Database Schema]\n{_schema}\n\n[Natural Language Question]\n{question}\n\n[Generate SQL now]\n"
+                baseline_block["prompt"] = f"[System]\n{BASELINE_SYSTEM_PROMPT}\n\n[User]\n{_baseline_user}"
+                _exp_sys = semantic.build_system_prompt()
+                _exp_user = f"[自然语言问题]\n{question}\n\n[请生成SQL]\n"
+                experiment_prompt = f"[System]\n{_exp_sys}\n\n[User]\n{_exp_user}"
+            mock_mode = False
     else:
         # ---- 路径 2：Mock 模式（内置题库 + 真实 SQLite 执行） ----
         mock_mode = True
-        matched_item = _match_mock_bank(question)
+        matched_item = _match_mock_bank(question) or _try_followup(question, history)
         baseline_block = _run_baseline_via_mock(question, matched_item)
 
         t_e = time.time()

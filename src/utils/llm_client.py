@@ -52,7 +52,7 @@ class LLMClient:
         self.base_url = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")
         self.model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
         self.temperature = float(os.environ.get("LLM_TEMPERATURE", "0"))
-        self.timeout = int(os.environ.get("LLM_TIMEOUT", "120"))
+        self.timeout = int(os.environ.get("LLM_TIMEOUT", "30"))
 
         if not self.api_key:
             raise ValueError(
@@ -60,7 +60,7 @@ class LLMClient:
                 "示例：export LLM_API_KEY=sk-xxx && export LLM_BASE_URL=https://ark.cn-beijing.volces.com/api/v3 && export LLM_MODEL=ep-xxx"
             )
 
-    def chat(self, messages, max_retries=5, **kwargs):
+    def chat(self, messages, max_retries=2, **kwargs):
         """发送 Chat Completion 请求，返回助手回复文本。
         遇到 429 限流自动指数退避重试。
         """
@@ -94,7 +94,7 @@ class LLMClient:
             except urllib.error.HTTPError as e:
                 err_body = e.read().decode("utf-8", errors="ignore")
                 if e.code == 429 and attempt < max_retries - 1:
-                    wait = 2 ** attempt * 3 + 1
+                    wait = 2 ** attempt * 1 + 1
                     print(f"   ⏳ 遇到限流(429)，等待 {wait}s 后重试 ({attempt+1}/{max_retries})...")
                     time.sleep(wait)
                     continue
