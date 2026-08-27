@@ -1,0 +1,207 @@
+{
+  "global_rules": {
+    "pay_status_filter_default": "pay_status = '已支付'",
+    "excluded_pay_status": ["已退款", "未支付"],
+    "default_time_range": "最近一个完整自然月",
+    "currency_unit": "元",
+    "ratio_output_format": "百分比（保留2位小数）",
+    "null_output": "0（并注明无符合条件数据）"
+  },
+  "time_semantics": {
+    "今天": "当天",
+    "昨天": "前1天",
+    "近7天": "当前日期 - 6天 ~ 当前日期",
+    "近30天": "当前日期 - 29天 ~ 当前日期",
+    "本月": "当月1日 ~ 当前日期",
+    "上月": "上一完整自然月",
+    "本季度": "本季度首日 ~ 当前日期",
+    "上季度": "上一完整自然季度",
+    "今年": "当年1月1日 ~ 当前日期",
+    "去年": "上一完整自然年",
+    "同期": "去年同一时间段",
+    "环比": "上一个同粒度周期"
+  },
+  "dimension_semantics": {
+    "region": {
+      "keywords": ["区域", "地区", "大区", "省份", "城市", "华东", "华北", "华南", "华中", "西南", "西北", "东北"],
+      "field": "customer.region / customer.city"
+    },
+    "category": {
+      "keywords": ["品类", "类别", "分类", "一级分类", "二级分类", "电子产品", "家居用品", "服装配饰", "食品饮料", "美妆个护"],
+      "field": "product.category / product.sub_category"
+    },
+    "channel": {
+      "keywords": ["渠道", "平台", "来源", "线上", "线下", "APP", "门店", "小程序", "第三方"],
+      "field": "order_item.channel"
+    },
+    "member_level": {
+      "keywords": ["等级", "会员等级", "VIP", "金卡", "银卡", "钻石", "普通"],
+      "field": "customer.member_level"
+    },
+    "brand": {
+      "keywords": ["品牌", "牌子"],
+      "field": "product.brand"
+    },
+    "gender": {
+      "keywords": ["性别", "男", "女"],
+      "field": "customer.gender"
+    }
+  },
+  "metrics": [
+    {
+      "id": "M01",
+      "name": "销售额",
+      "en_name": "sales_amount",
+      "aliases": ["销售额", "成交额", "营收", "总收入", "销售总额", "GMV", "总销售", "卖了多少钱"],
+      "definition": "统计周期内客户已实际支付的订单商品折后总金额（不含退款和未支付）",
+      "sql_template": "SUM(oi.amount) FILTER (WHERE oi.pay_status = '已支付')",
+      "base_from": "FROM order_item oi",
+      "common_joins": [
+        "LEFT JOIN customer c ON oi.customer_id = c.customer_id",
+        "LEFT JOIN product p ON oi.product_id = p.product_id",
+        "LEFT JOIN date d ON oi.date_id = d.date_id"
+      ],
+      "time_field": "d.date / oi.order_date",
+      "confusing_notes": [
+        "不要把已退款/未支付算进去（那是下单金额，不是销售额）",
+        "不要用 unit_price*quantity 不加 discount（那是原价销售额）"
+      ],
+      "supported_dimensions": ["time", "region", "category", "member_level", "channel", "brand"],
+      "interpret_template": "{time_range} 内的销售额为 {value} 元，较 {compare_period} {trend} {amplitude}。其中贡献最大的维度为 {top_dim}，占比 {top_share}。"
+    },
+    {
+      "id": "M02",
+      "name": "订单量",
+      "en_name": "order_count",
+      "aliases": ["订单量", "订单数", "成单数", "交易量", "单量", "多少单"],
+      "definition": "统计周期内状态为已支付的独立订单个数（同一 order_id 多行明细只计1单）",
+      "sql_template": "COUNT(DISTINCT oi.order_id) FILTER (WHERE oi.pay_status = '已支付')",
+      "base_from": "FROM order_item oi",
+      "common_joins": [
+        "LEFT JOIN customer c ON oi.customer_id = c.customer_id",
+        "LEFT JOIN date d ON oi.date_id = d.date_id"
+      ],
+      "time_field": "d.date / oi.order_date",
+      "confusing_notes": [
+        "不要用 COUNT(*) 统计 order_item 行数（同一订单多商品会重复计数）",
+        "不要忘记 DISTINCT order_id"
+      ],
+      "supported_dimensions": ["time", "region", "member_level", "channel"],
+      "interpret_template": "{time_range} 内的订单量为 {value} 单。平均每日约 {daily_avg} 单，{channel} 渠道贡献最大，占比 {share}。"
+    },
+    {
+      "id": "M03",
+      "name": "客单价",
+      "en_name": "aov",
+      "aliases": ["客单价", "单均价", "每单均价", "单笔均价", "平均客单价", "平均每单"],
+      "definition": "每一笔已支付订单的平均消费金额",
+      "sql_template": "SUM(oi.amount) FILTER (WHERE oi.pay_status='已支付') * 1.0 / NULLIF(COUNT(DISTINCT oi.order_id) FILTER (WHERE oi.pay_status='已支付'), 0)",
+      "base_from": "FROM order_item oi",
+      "common_joins": [
+        "LEFT JOIN customer c ON oi.customer_id = c.customer_id",
+        "LEFT JOIN product p ON oi.product_id = p.product_id",
+        "LEFT JOIN date d ON oi.date_id = d.date_id"
+      ],
+      "time_field": "d.date / oi.order_date",
+      "confusing_notes": [
+        "不要按客户数平均（那是人均消费 ARPU，不是客单价）",
+        "分母不要用 COUNT(*) 行数而不是 DISTINCT 订单（会导致低估）"
+      ],
+      "supported_dimensions": ["time", "region", "member_level", "channel", "category"],
+      "interpret_template": "{time_range} 内客单价为 {value} 元，较上一周期 {trend} {amplitude}。高客单价主要来自 {group} 群体。"
+    },
+    {
+      "id": "M04",
+      "name": "新客数",
+      "en_name": "new_customer_count",
+      "aliases": ["新客数", "新增客户", "首单客户", "新用户", "新增付费客户", "新增消费者"],
+      "definition": "统计周期内首次发生支付行为的客户数量（首单时间落在该周期内），以实际支付而非注册或下单为准",
+      "sql_template": "COUNT(DISTINCT t.customer_id) FROM (SELECT customer_id, MIN(order_date) AS first_pay_date FROM order_item WHERE pay_status='已支付' GROUP BY customer_id) t WHERE t.first_pay_date BETWEEN :start AND :end",
+      "base_from": "FROM order_item oi",
+      "common_joins": [
+        "LEFT JOIN customer c ON oi.customer_id = c.customer_id"
+      ],
+      "time_field": "first_pay_date（客户维度）",
+      "confusing_notes": [
+        "不要按注册日期统计（那是新增注册数，不代表有消费）",
+        "不要按下单日期但未过滤已支付（会虚高）",
+        "不要按注册日期在周期内且有消费统计（老客户首单延迟会漏算）"
+      ],
+      "supported_dimensions": ["time", "region", "member_level", "channel"],
+      "interpret_template": "{time_range} 内新增付费客户 {value} 人，较同期 {trend} {amplitude}。主要来源区域为 {top_region}。"
+    },
+    {
+      "id": "M05",
+      "name": "复购率",
+      "en_name": "repurchase_rate",
+      "aliases": ["复购率", "复购", "回头客", "重复购买率", "回购率"],
+      "definition": "统计周期内发生过2次及以上已支付订单的客户数，占该周期内有支付行为客户总数的比例",
+      "sql_template": "ROUND(SUM(CASE WHEN t.order_cnt >= 2 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0), 2) FROM (SELECT customer_id, COUNT(DISTINCT order_id) AS order_cnt FROM order_item WHERE pay_status='已支付' AND order_date BETWEEN :start AND :end GROUP BY customer_id) t",
+      "base_from": "FROM order_item oi",
+      "common_joins": [
+        "LEFT JOIN customer c ON oi.customer_id = c.customer_id"
+      ],
+      "time_field": "oi.order_date",
+      "confusing_notes": [
+        "不要用订单数维度（应该是客户维度）",
+        "不要跨周期统计历史复购（那是存量复购率，要明确说明）",
+        "不要忘记过滤 pay_status"
+      ],
+      "supported_dimensions": ["time", "region", "member_level", "channel"],
+      "interpret_template": "{time_range} 内复购率为 {value}%，即每100位付费客户中有 {int_part} 位购买超过1次。{best_group} 群体复购表现最好。"
+    },
+    {
+      "id": "M06",
+      "name": "活跃客户数",
+      "en_name": "active_customer_count",
+      "aliases": ["活跃客户数", "活跃用户", "付费客户数", "消费人数", "活跃人数"],
+      "definition": "统计周期内至少发生1次已支付行为的独立客户数",
+      "sql_template": "COUNT(DISTINCT oi.customer_id) FILTER (WHERE oi.pay_status='已支付')",
+      "base_from": "FROM order_item oi",
+      "common_joins": [
+        "LEFT JOIN customer c ON oi.customer_id = c.customer_id",
+        "LEFT JOIN date d ON oi.date_id = d.date_id"
+      ],
+      "time_field": "d.date / oi.order_date",
+      "confusing_notes": [
+        "不要把登录未消费的客户算进去（那是活跃登录数）"
+      ],
+      "supported_dimensions": ["time", "region", "member_level", "channel"],
+      "interpret_template": "{time_range} 内活跃付费客户数为 {value} 人。"
+    },
+    {
+      "id": "M07",
+      "name": "商品动销率",
+      "en_name": "product_conversion_rate",
+      "aliases": ["动销率", "商品转化率", "售出率", "上架销售率"],
+      "definition": "统计周期内至少产生1笔已支付订单的在售商品数占全部在售商品总数的比例",
+      "sql_template": "ROUND(COUNT(DISTINCT CASE WHEN oi.pay_status='已支付' THEN oi.product_id END) * 100.0 / NULLIF(COUNT(DISTINCT CASE WHEN p.status='在售' THEN p.product_id END), 0), 2)",
+      "base_from": "FROM product p LEFT JOIN order_item oi ON p.product_id = oi.product_id AND oi.order_date BETWEEN :start AND :end",
+      "common_joins": [],
+      "time_field": "oi.order_date",
+      "confusing_notes": [
+        "分母不要包含下架商品（会导致虚低）",
+        "分子不要忘记过滤已支付"
+      ],
+      "supported_dimensions": ["time", "category", "brand"],
+      "interpret_template": "{time_range} 内商品动销率为 {value}%，{top_cat} 表现最佳。"
+    },
+    {
+      "id": "M08",
+      "name": "区域销售占比",
+      "en_name": "region_sales_share",
+      "aliases": ["区域销售占比", "区域占比", "区域分布", "区域构成", "各区域销售占比", "地区贡献"],
+      "definition": "统计周期内某区域的销售额占全公司总销售额的百分比，所有区域合计为100%",
+      "sql_template": "ROUND(SUM(CASE WHEN c.region = :region THEN oi.amount ELSE 0 END) FILTER (WHERE oi.pay_status='已支付') * 100.0 / NULLIF(SUM(oi.amount) FILTER (WHERE oi.pay_status='已支付'), 0), 2)",
+      "base_from": "FROM order_item oi LEFT JOIN customer c ON oi.customer_id = c.customer_id",
+      "common_joins": [],
+      "time_field": "oi.order_date",
+      "confusing_notes": [
+        "分子不要用订单量（那是区域订单占比，不是销售占比）",
+        "分母不要只算部分区域（总和要等于100%）"
+      ],
+      "supported_dimensions": ["time", "channel", "category"],
+      "interpret_template": "{time_range} 内销售额区域分布为：各区域百分比；其中 Top1 为 {top_region}，占比 {top_share}。"
+    }
+  ]
+}

@@ -1,0 +1,317 @@
+﻿question_id,question,metric_ids,difficulty,question_type,generated_sql,exec_success,exec_error,exec_row_count,result_match_reference,mismatch_reason,ref_sql,elapsed_ms_llm,elapsed_ms_sql,total_elapsed_ms,timestamp
+Q01,上月销售额多少？,M01,简单,直接统计,"SELECT SUM(amount) AS last_month_sales_amount
+FROM order_item
+WHERE pay_status = '已支付'
+  AND strftime('%Y-%m', order_date) = strftime('%Y-%m', date('now', '-1 month'));",1,,1,0,数值/文本不一致: 行0列0 'None' vs '5508311.27',"SELECT ROUND(SUM(amount), 2) AS sales_amount FROM order_item WHERE pay_status = '已支付' AND order_date BETWEEN '2026-06-01' AND '2026-06-30';",2604.6,75.4,2680.0,2026-08-20 15:38:32
+Q02,今年上半年华东区域的销售额是多少？,M01,中等,直接统计,"SELECT SUM(amount) AS east_china_h1_sales
+FROM order_item
+JOIN customer ON order_item.customer_id = customer.customer_id
+WHERE customer.region = '华东'
+  AND order_item.pay_status = '已支付'
+  AND strftime('%Y', order_item.order_date) = '2025'
+  AND strftime('%m', order_item.order_date) BETWEEN '01' AND '06';",1,,1,0,数值/文本不一致: 行0列0 757782.45 vs 4441166.8,"SELECT ROUND(SUM(oi.amount), 2) AS sales_amount FROM order_item oi LEFT JOIN customer c ON oi.customer_id = c.customer_id WHERE oi.pay_status = '已支付' AND c.region = '华东' AND oi.order_date BETWEEN '2026-01-01' AND '2026-06-30';",3693.9,12.8,3706.7,2026-08-20 15:38:36
+Q03,2025年Q4电子产品的销售额是多少？,M01,中等,直接统计,"SELECT SUM(oi.amount) AS sales_amount
+FROM order_item oi
+JOIN product p ON oi.product_id = p.product_id
+WHERE p.category = '电子产品'
+  AND oi.pay_status = '已支付'
+  AND strftime('%Y', oi.order_date) = '2025'
+  AND strftime('%m', oi.order_date) IN ('10', '11', '12');",1,,1,1,,"SELECT ROUND(SUM(oi.amount), 2) AS sales_amount FROM order_item oi LEFT JOIN product p ON oi.product_id = p.product_id WHERE oi.pay_status = '已支付' AND p.category = '电子产品' AND oi.order_date BETWEEN '2025-10-01' AND '2025-12-31';",2183.5,10.2,2193.7,2026-08-20 15:38:39
+Q04,去年金卡会员的订单量是多少？,M02,中等,直接统计,"SELECT COUNT(DISTINCT o.order_id) AS gold_member_order_count
+FROM order_item o
+JOIN customer c ON o.customer_id = c.customer_id
+WHERE c.member_level = '金卡'
+  AND strftime('%Y', o.order_date) = '2025'
+  AND o.pay_status = '已支付';",1,,1,1,,SELECT COUNT(DISTINCT oi.order_id) AS order_count FROM order_item oi LEFT JOIN customer c ON oi.customer_id = c.customer_id WHERE oi.pay_status = '已支付' AND c.member_level = '金卡' AND oi.order_date BETWEEN '2025-01-01' AND '2025-12-31';,2333.0,9.1,2342.1,2026-08-20 15:38:41
+Q05,2025年全年的客单价是多少？,M03,中等,直接统计,"SELECT
+    SUM(amount) / COUNT(DISTINCT order_id) AS aov
+FROM order_item
+WHERE strftime('%Y', order_date) = '2025'
+  AND pay_status = '已支付';",1,,1,1,,"SELECT ROUND(SUM(amount) * 1.0 / NULLIF(COUNT(DISTINCT order_id), 0), 2) AS aov FROM order_item WHERE pay_status = '已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31';",1363.3,7.9,1371.2,2026-08-20 15:38:43
+Q06,2025年每个月的销售额变化趋势是怎样的？,M01,中等,趋势分析,"SELECT
+    strftime('%Y-%m', order_date) AS month,
+    SUM(amount) AS sales_amount,
+    COUNT(DISTINCT order_id) AS order_count
+FROM order_item
+WHERE pay_status = '已支付'
+  AND strftime('%Y', order_date) = '2025'
+GROUP BY strftime('%Y-%m', order_date)
+ORDER BY month;",1,,12,0,列数不一致 生成=3 vs 参考=2,"SELECT strftime('%Y-%m', order_date) AS month, ROUND(SUM(amount), 2) AS sales_amount FROM order_item WHERE pay_status = '已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY month ORDER BY month;",13070.9,11.7,13082.6,2026-08-20 15:38:57
+Q07,近6个月的订单量变化趋势,M02,中等,趋势分析,"SELECT
+    strftime('%Y-%m', order_date) AS month,
+    COUNT(DISTINCT order_id) AS order_count
+FROM order_item
+WHERE pay_status = '已支付'
+  AND order_date >= date('2026-01-01', '-6 months')
+  AND order_date <= '2026-06-30'
+GROUP BY strftime('%Y-%m', order_date)
+ORDER BY month;",1,,12,0,行数不一致 生成=12 vs 参考=6,"SELECT strftime('%Y-%m', order_date) AS month, COUNT(DISTINCT order_id) AS order_count FROM order_item WHERE pay_status = '已支付' AND order_date BETWEEN '2026-01-01' AND '2026-06-30' GROUP BY month ORDER BY month;",2353.2,13.3,2366.5,2026-08-20 15:39:00
+Q08,2025年各季度新客数的变化情况,M04,困难,趋势分析,"SELECT
+    d.quarter AS quarter,
+    COUNT(DISTINCT c.customer_id) AS new_customer_count
+FROM customer c
+INNER JOIN date_dim d
+    ON strftime('%Y-%m-%d', c.register_date) = d.date
+WHERE d.year = 2025
+GROUP BY d.quarter
+ORDER BY d.quarter;",1,,4,0,数值/文本不一致: 行0列0 '1.0' vs '2025Q1'; 行1列0 '2.0' vs '2025Q2'; 行2列0 '3.0' vs '2025Q3',"WITH first_pay AS (SELECT customer_id, MIN(order_date) AS first_date FROM order_item WHERE pay_status = '已支付' GROUP BY customer_id) SELECT CASE WHEN first_date BETWEEN '2025-01-01' AND '2025-03-31' THEN '2025Q1' WHEN first_date BETWEEN '2025-04-01' AND '2025-06-30' THEN '2025Q2' WHEN first_date BETWEEN '2025-07-01' AND '2025-09-30' THEN '2025Q3' WHEN first_date BETWEEN '2025-10-01' AND '2025-12-31' THEN '2025Q4' END AS quarter_name, COUNT(DISTINCT customer_id) AS new_customer_count FROM first_pay WHERE first_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY quarter_name ORDER BY quarter_name;",15812.4,7.4,15819.8,2026-08-20 15:39:16
+Q09,2025年每个月的客单价，同时给出同比上月的环比变化,M03,困难,趋势分析,"WITH monthly_metrics AS (
+    SELECT
+        strftime('%Y-%m', order_date) AS year_month,
+        SUM(amount) AS total_sales,
+        COUNT(DISTINCT order_id) AS order_count,
+        SUM(amount) / COUNT(DISTINCT order_id) AS aov
+    FROM order_item
+    WHERE strftime('%Y', order_date) = '2025'
+      AND pay_status = '已支付'
+    GROUP BY strftime('%Y-%m', order_date)
+)
+SELECT
+    year_month,
+    total_sales,
+    order_count,
+    ROUND(aov, 2) AS aov,
+    ROUND(
+        (aov - LAG(aov) OVER (ORDER BY year_month)) / LAG(aov) OVER (ORDER BY year_month) * 100,
+        2
+    ) AS mom_change_pct
+FROM monthly_metrics
+ORDER BY year_month;",1,,12,0,列数不一致 生成=5 vs 参考=4,"WITH monthly_aov AS (SELECT strftime('%Y-%m', order_date) AS month, ROUND(SUM(amount) * 1.0 / NULLIF(COUNT(DISTINCT order_id), 0), 2) AS aov FROM order_item WHERE pay_status = '已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY month) SELECT month, aov, LAG(aov) OVER (ORDER BY month) AS prev_aov, ROUND((aov - LAG(aov) OVER (ORDER BY month)) * 100.0 / NULLIF(LAG(aov) OVER (ORDER BY month), 0), 2) AS mom_change_pct FROM monthly_aov ORDER BY month;",4568.2,18.1,4586.3,2026-08-20 15:39:21
+Q10,各渠道按季度的销售额变化趋势,M01,困难,趋势分析,"SELECT
+    d.year AS year,
+    d.quarter AS quarter,
+    o.channel AS channel,
+    SUM(o.amount) AS sales_amount
+FROM order_item o
+JOIN date_dim d ON o.date_id = d.date_id
+WHERE o.pay_status = '已支付'
+GROUP BY d.year, d.quarter, o.channel
+ORDER BY d.year, d.quarter, o.channel;",1,,24,0,列数不一致 生成=4 vs 参考=3,"SELECT channel, CASE WHEN order_date BETWEEN '2025-01-01' AND '2025-03-31' THEN '2025Q1' WHEN order_date BETWEEN '2025-04-01' AND '2025-06-30' THEN '2025Q2' WHEN order_date BETWEEN '2025-07-01' AND '2025-09-30' THEN '2025Q3' WHEN order_date BETWEEN '2025-10-01' AND '2025-12-31' THEN '2025Q4' WHEN order_date BETWEEN '2026-01-01' AND '2026-03-31' THEN '2026Q1' WHEN order_date BETWEEN '2026-04-01' AND '2026-06-30' THEN '2026Q2' END AS quarter_name, ROUND(SUM(amount), 2) AS sales_amount FROM order_item WHERE pay_status = '已支付' AND order_date BETWEEN '2025-01-01' AND '2026-06-30' GROUP BY channel, quarter_name ORDER BY channel, quarter_name;",3030.1,19.5,3049.6,2026-08-20 15:39:25
+Q11,华东和华北2025年全年的销售额对比,M01,中等,对比分析,"SELECT
+    c.region,
+    SUM(oi.amount) AS sales_amount
+FROM order_item oi
+JOIN customer c ON oi.customer_id = c.customer_id
+WHERE c.region IN ('华东', '华北')
+  AND strftime('%Y', oi.order_date) = '2025'
+  AND oi.pay_status = '已支付'
+GROUP BY c.region
+ORDER BY c.region;",1,,2,1,,"SELECT c.region, ROUND(SUM(oi.amount), 2) AS sales_amount FROM order_item oi LEFT JOIN customer c ON oi.customer_id = c.customer_id WHERE oi.pay_status = '已支付' AND c.region IN ('华东', '华北') AND oi.order_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY c.region ORDER BY sales_amount DESC;",3349.9,11.3,3361.2,2026-08-20 15:39:29
+Q12,金卡会员和普通会员在2025年Q4的订单量对比,M02,中等,对比分析,"SELECT
+    c.member_level,
+    COUNT(DISTINCT o.order_id) AS order_count
+FROM order_item o
+JOIN customer c ON o.customer_id = c.customer_id
+JOIN date_dim d ON o.date_id = d.date_id
+WHERE c.member_level IN ('金卡', '普通')
+  AND d.year = 2025
+  AND d.quarter = 4
+GROUP BY c.member_level;",1,,2,0,数值/文本不一致: 行0列1 1028.0 vs 955.0; 行1列1 291.0 vs 265.0,"SELECT c.member_level, COUNT(DISTINCT oi.order_id) AS order_count FROM order_item oi LEFT JOIN customer c ON oi.customer_id = c.customer_id WHERE oi.pay_status = '已支付' AND c.member_level IN ('金卡', '普通') AND oi.order_date BETWEEN '2025-10-01' AND '2025-12-31' GROUP BY c.member_level;",2629.0,8.6,2637.7,2026-08-20 15:39:32
+Q13,线上APP渠道和线下门店渠道，哪个客单价更高？,M03,中等,对比分析,"SELECT
+    channel,
+    SUM(amount) / COUNT(DISTINCT order_id) AS aov
+FROM order_item
+WHERE channel IN ('线上APP', '线下门店')
+  AND pay_status = '已支付'
+GROUP BY channel
+ORDER BY aov DESC;",1,,2,0,数值/文本不一致: 行0列1 5754.12700220022 vs 5532.46; 行1列1 6158.4554234150855 vs 6227.12,"SELECT channel, ROUND(SUM(amount) * 1.0 / NULLIF(COUNT(DISTINCT order_id), 0), 2) AS aov FROM order_item WHERE pay_status = '已支付' AND channel IN ('线上APP', '线下门店') AND order_date BETWEEN '2026-06-01' AND '2026-06-30' GROUP BY channel ORDER BY aov DESC;",2042.9,10.5,2053.4,2026-08-20 15:39:34
+Q14,2025年全年 vs 2026年上半年的销售额对比,M01,中等,对比分析,"SELECT
+    CASE
+        WHEN strftime('%Y', order_date) = '2025' THEN '2025年全年'
+        WHEN strftime('%Y', order_date) = '2026' AND strftime('%m', order_date) BETWEEN '01' AND '06' THEN '2026年上半年'
+    END AS period,
+    SUM(amount) AS sales_amount
+FROM order_item
+WHERE pay_status = '已支付'
+  AND (
+      (strftime('%Y', order_date) = '2025')
+      OR
+      (strftime('%Y', order_date) = '2026' AND strftime('%m', order_date) BETWEEN '01' AND '06')
+  )
+GROUP BY period
+ORDER BY period;",1,,2,0,数值/文本不一致: 行0列0 '2025年全年' vs '2025全年'; 行1列0 '2026年上半年' vs '2026上半年',"SELECT CASE WHEN order_date BETWEEN '2025-01-01' AND '2025-12-31' THEN '2025全年' WHEN order_date BETWEEN '2026-01-01' AND '2026-06-30' THEN '2026上半年' END AS period_name, ROUND(SUM(amount), 2) AS sales_amount FROM order_item WHERE pay_status = '已支付' AND (order_date BETWEEN '2025-01-01' AND '2025-12-31' OR order_date BETWEEN '2026-01-01' AND '2026-06-30') GROUP BY period_name;",3847.4,23.9,3871.3,2026-08-20 15:39:39
+Q15,五大一级品类2025年全年销售额对比,M01,中等,对比分析,"SELECT
+    p.category AS product_category,
+    SUM(oi.amount) AS total_sales_amount
+FROM order_item oi
+JOIN product p ON oi.product_id = p.product_id
+WHERE oi.pay_status = '已支付'
+  AND strftime('%Y', oi.order_date) = '2025'
+GROUP BY p.category
+ORDER BY total_sales_amount DESC;",1,,5,1,,"SELECT p.category, ROUND(SUM(oi.amount), 2) AS sales_amount FROM order_item oi LEFT JOIN product p ON oi.product_id = p.product_id WHERE oi.pay_status = '已支付' AND oi.order_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY p.category ORDER BY sales_amount DESC;",2358.0,14.6,2372.6,2026-08-20 15:39:42
+Q16,一级品类中，销售额最高的Top3是哪些？（2025全年）,M01,中等,排名分析,"SELECT p.category AS category, SUM(oi.amount) AS sales_amount
+FROM order_item oi
+JOIN product p ON oi.product_id = p.product_id
+WHERE oi.pay_status = '已支付'
+  AND strftime('%Y', oi.order_date) = '2025'
+GROUP BY p.category
+ORDER BY sales_amount DESC
+LIMIT 3;",1,,3,1,,"SELECT p.category, ROUND(SUM(oi.amount), 2) AS sales_amount FROM order_item oi LEFT JOIN product p ON oi.product_id = p.product_id WHERE oi.pay_status = '已支付' AND oi.order_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY p.category ORDER BY sales_amount DESC LIMIT 3;",2893.3,11.0,2904.3,2026-08-20 15:39:45
+Q17,2026年上半年订单量最多的前5个城市是哪些？,M02,中等,排名分析,"SELECT c.city, COUNT(DISTINCT o.order_id) AS order_count
+FROM order_item o
+JOIN customer c ON o.customer_id = c.customer_id
+WHERE o.order_date BETWEEN '2026-01-01' AND '2026-06-30'
+  AND o.pay_status = '已支付'
+GROUP BY c.city
+ORDER BY order_count DESC
+LIMIT 5;",1,,5,1,,"SELECT c.city, COUNT(DISTINCT oi.order_id) AS order_count FROM order_item oi LEFT JOIN customer c ON oi.customer_id = c.customer_id WHERE oi.pay_status = '已支付' AND oi.order_date BETWEEN '2026-01-01' AND '2026-06-30' GROUP BY c.city ORDER BY order_count DESC LIMIT 5;",2554.3,12.5,2566.8,2026-08-20 15:39:48
+Q18,按区域来看，客单价最高的3个区域是？,M03,中等,排名分析,"SELECT c.region,
+       SUM(oi.amount) / COUNT(DISTINCT oi.order_id) AS aov
+FROM order_item oi
+JOIN customer c ON oi.customer_id = c.customer_id
+WHERE oi.pay_status = '已支付'
+GROUP BY c.region
+ORDER BY aov DESC
+LIMIT 3;",1,,3,0,数值/文本不一致: 行0列1 6155.386891105569 vs 7194.69; 行1列0 '华中' vs '西北'; 行2列1 6231.523650503202 vs 6342.8,"SELECT c.region, ROUND(SUM(oi.amount) * 1.0 / NULLIF(COUNT(DISTINCT oi.order_id), 0), 2) AS aov FROM order_item oi LEFT JOIN customer c ON oi.customer_id = c.customer_id WHERE oi.pay_status = '已支付' AND oi.order_date BETWEEN '2026-06-01' AND '2026-06-30' GROUP BY c.region ORDER BY aov DESC LIMIT 3;",2175.4,6.6,2182.0,2026-08-20 15:39:51
+Q19,2025年新增付费客户数最多的10个城市,M04,困难,排名分析,"SELECT
+    c.city,
+    COUNT(DISTINCT c.customer_id) AS new_paid_customer_count
+FROM customer c
+INNER JOIN order_item oi
+    ON c.customer_id = oi.customer_id
+WHERE strftime('%Y', c.register_date) = '2025'
+  AND oi.pay_status = '已支付'
+  AND strftime('%Y', oi.order_date) = '2025'
+GROUP BY c.city
+ORDER BY new_paid_customer_count DESC
+LIMIT 10;",1,,10,1,,"WITH first_pay AS (SELECT customer_id, MIN(order_date) AS first_date FROM order_item WHERE pay_status = '已支付' GROUP BY customer_id) SELECT c.city, COUNT(DISTINCT fp.customer_id) AS new_customer_count FROM first_pay fp LEFT JOIN customer c ON fp.customer_id = c.customer_id WHERE fp.first_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY c.city ORDER BY new_customer_count DESC LIMIT 10;",2587.0,12.1,2599.1,2026-08-20 15:39:54
+Q20,2025年销售额最低的5个品牌,M01,中等,排名分析,"SELECT p.brand, SUM(oi.amount) AS total_sales
+FROM order_item oi
+JOIN product p ON oi.product_id = p.product_id
+WHERE strftime('%Y', oi.order_date) = '2025'
+  AND oi.pay_status = '已支付'
+GROUP BY p.brand
+ORDER BY total_sales ASC
+LIMIT 5;",1,,5,1,,"SELECT p.brand, ROUND(SUM(oi.amount), 2) AS sales_amount FROM order_item oi LEFT JOIN product p ON oi.product_id = p.product_id WHERE oi.pay_status = '已支付' AND oi.order_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY p.brand ORDER BY sales_amount ASC LIMIT 5;",2234.9,13.4,2248.3,2026-08-20 15:39:57
+Q21,7大区域的销售额占比（上月）,M08,中等,占比分析,"WITH last_month_sales AS (
+    SELECT 
+        c.region,
+        SUM(oi.amount) AS region_sales
+    FROM order_item oi
+    JOIN customer c ON oi.customer_id = c.customer_id
+    WHERE oi.pay_status = '已支付'
+      AND strftime('%Y-%m', oi.order_date) = strftime('%Y-%m', date('now', '-1 month'))
+    GROUP BY c.region
+),
+total_sales AS (
+    SELECT SUM(region_sales) AS total FROM last_month_sales
+)
+SELECT 
+    lms.region,
+    lms.region_sales,
+    ROUND(lms.region_sales / ts.total * 100, 2) AS sales_percentage
+FROM last_month_sales lms, total_sales ts
+ORDER BY sales_percentage DESC;",1,,0,0,行数不一致 生成=0 vs 参考=7,"WITH sales_by_region AS (SELECT c.region, SUM(oi.amount) AS total_amount FROM order_item oi LEFT JOIN customer c ON oi.customer_id = c.customer_id WHERE oi.pay_status = '已支付' AND oi.order_date BETWEEN '2026-06-01' AND '2026-06-30' GROUP BY c.region), total AS (SELECT SUM(total_amount) AS all_amount FROM sales_by_region) SELECT s.region, ROUND(s.total_amount, 2) AS sales_amount, ROUND(s.total_amount * 100.0 / t.all_amount, 2) AS share_pct FROM sales_by_region s, total t ORDER BY share_pct DESC;",4838.2,9.8,4848.0,2026-08-20 15:40:02
+Q22,2025年各渠道的订单量占比,M02,中等,占比分析,"WITH channel_orders AS (
+    SELECT
+        channel,
+        COUNT(DISTINCT order_id) AS order_count
+    FROM order_item
+    WHERE strftime('%Y', order_date) = '2025'
+    GROUP BY channel
+),
+total_orders AS (
+    SELECT SUM(order_count) AS total_count
+    FROM channel_orders
+)
+SELECT
+    co.channel,
+    co.order_count,
+    ROUND(co.order_count * 100.0 / to2.total_count, 2) AS order_percentage
+FROM channel_orders co
+CROSS JOIN total_orders to2
+ORDER BY order_percentage DESC;",1,,4,0,数值/文本不一致: 行0列1 820.0 vs 767.0; 行1列1 619.0 vs 579.0; 行2列1 1636.0 vs 1505.0,"WITH orders_by_channel AS (SELECT channel, COUNT(DISTINCT order_id) AS order_cnt FROM order_item WHERE pay_status = '已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY channel), total AS (SELECT SUM(order_cnt) AS all_cnt FROM orders_by_channel) SELECT o.channel, o.order_cnt AS order_count, ROUND(o.order_cnt * 100.0 / t.all_cnt, 2) AS share_pct FROM orders_by_channel o, total t ORDER BY share_pct DESC;",3202.7,12.0,3214.7,2026-08-20 15:40:06
+Q23,电子产品一级品类下，5个二级子品类的销售额占比（2025全年）,M01,中等,占比分析,"WITH category_total AS (
+    SELECT SUM(oi.amount) AS total_sales
+    FROM order_item oi
+    JOIN product p ON oi.product_id = p.product_id
+    WHERE p.category = '电子产品'
+      AND oi.pay_status = '已支付'
+      AND strftime('%Y', oi.order_date) = '2025'
+)
+SELECT 
+    p.sub_category,
+    SUM(oi.amount) AS subcategory_sales,
+    ROUND(SUM(oi.amount) * 100.0 / ct.total_sales, 2) AS sales_percentage
+FROM order_item oi
+JOIN product p ON oi.product_id = p.product_id
+CROSS JOIN category_total ct
+WHERE p.category = '电子产品'
+  AND oi.pay_status = '已支付'
+  AND strftime('%Y', oi.order_date) = '2025'
+GROUP BY p.sub_category
+ORDER BY sales_percentage DESC;",1,,5,1,,"WITH sub_sales AS (SELECT p.sub_category, SUM(oi.amount) AS total_amount FROM order_item oi LEFT JOIN product p ON oi.product_id = p.product_id WHERE oi.pay_status = '已支付' AND p.category = '电子产品' AND oi.order_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY p.sub_category), total AS (SELECT SUM(total_amount) AS all_amount FROM sub_sales) SELECT s.sub_category, ROUND(s.total_amount, 2) AS sales_amount, ROUND(s.total_amount * 100.0 / t.all_amount, 2) AS share_pct FROM sub_sales s, total t ORDER BY share_pct DESC;",5049.1,9.8,5058.9,2026-08-20 15:40:11
+Q24,2025年哪个月的销售额环比上月跌幅最大？,M01,困难,异常识别,"WITH monthly_sales AS (
+    SELECT 
+        strftime('%Y-%m', order_date) AS year_month,
+        SUM(amount) AS sales_amount
+    FROM order_item
+    WHERE pay_status = '已支付'
+      AND strftime('%Y', order_date) = '2025'
+    GROUP BY strftime('%Y-%m', order_date)
+),
+monthly_with_prev AS (
+    SELECT 
+        year_month,
+        sales_amount,
+        LAG(sales_amount) OVER (ORDER BY year_month) AS prev_month_sales
+    FROM monthly_sales
+)
+SELECT 
+    year_month,
+    sales_amount,
+    prev_month_sales,
+    ROUND((sales_amount - prev_month_sales) / prev_month_sales * 100, 2) AS month_over_month_change_pct
+FROM monthly_with_prev
+WHERE prev_month_sales IS NOT NULL
+ORDER BY (sales_amount - prev_month_sales) / prev_month_sales ASC
+LIMIT 1;",1,,1,1,,"WITH monthly_sales AS (SELECT strftime('%Y-%m', order_date) AS month, SUM(amount) AS sales_amount FROM order_item WHERE pay_status = '已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY month), with_mom AS (SELECT month, sales_amount, LAG(sales_amount) OVER (ORDER BY month) AS prev_sales, ROUND((sales_amount - LAG(sales_amount) OVER (ORDER BY month)) * 100.0 / NULLIF(LAG(sales_amount) OVER (ORDER BY month), 0), 2) AS mom_pct FROM monthly_sales) SELECT month, ROUND(sales_amount, 2) AS sales_amount, ROUND(prev_sales, 2) AS prev_month_sales, mom_pct AS mom_change_pct FROM with_mom WHERE mom_pct IS NOT NULL ORDER BY mom_pct ASC LIMIT 1;",5655.7,11.6,5667.3,2026-08-20 15:40:18
+Q25,2025年复购率最高和最低的月份分别是？,M05,困难,异常识别,"WITH monthly_first_purchase AS (
+    SELECT 
+        customer_id,
+        MIN(strftime('%Y-%m', order_date)) AS first_purchase_month
+    FROM order_item
+    WHERE pay_status = '已支付'
+      AND strftime('%Y', order_date) = '2025'
+    GROUP BY customer_id
+),
+monthly_new_customers AS (
+    SELECT 
+        first_purchase_month AS month,
+        COUNT(DISTINCT customer_id) AS new_customer_count
+    FROM monthly_first_purchase
+    GROUP BY first_purchase_month
+),
+monthly_repurchase AS (
+    SELECT 
+        strftime('%Y-%m', o.order_date) AS month,
+        COUNT(DISTINCT o.customer_id) AS repurchase_customer_count
+    FROM order_item o
+    JOIN monthly_first_purchase mfp
+        ON o.customer_id = mfp.customer_id
+       AND strftime('%Y-%m', o.order_date) > mfp.first_purchase_month
+    WHERE o.pay_status = '已支付'
+      AND strftime('%Y', o.order_date) = '2025'
+    GROUP BY strftime('%Y-%m', o.order_date)
+),
+monthly_repurchase_rate AS (
+    SELECT 
+        mn.month,
+        COALESCE(mr.repurchase_customer_count, 0) * 1.0 / mn.new_customer_count AS repurchase_rate
+    FROM monthly_new_customers mn
+    LEFT JOIN monthly_repurchase mr ON mn.month = mr.month
+)
+SELECT 
+    month,
+    repurchase_rate,
+    CASE 
+        WHEN repurchase_rate = (SELECT MAX(repurchase_rate) FROM monthly_repurchase_rate) THEN '最高复购率月份'
+        WHEN repurchase_rate = (SELECT MIN(repurchase_rate) FROM monthly_repurchase_rate) THEN '最低复购率月份'
+    END AS rate_type
+FROM monthly_repurchase_rate
+WHERE repurchase_rate IN (
+    SELECT MAX(repurchase_rate) FROM monthly_repurchase_rate
+    UNION
+    SELECT MIN(repurchase_rate) FROM monthly_repurchase_rate
+)
+ORDER BY repurchase_rate DESC;",1,,2,0,行数不一致 生成=2 vs 参考=12,"WITH monthly_customer_orders AS (SELECT strftime('%Y-%m', order_date) AS month, customer_id, COUNT(DISTINCT order_id) AS order_cnt FROM order_item WHERE pay_status = '已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31' GROUP BY month, customer_id), monthly_repurchase AS (SELECT month, COUNT(*) AS total_active_customers, SUM(CASE WHEN order_cnt >= 2 THEN 1 ELSE 0 END) AS repurchase_customers FROM monthly_customer_orders GROUP BY month) SELECT month, total_active_customers, repurchase_customers, ROUND(repurchase_customers * 100.0 / NULLIF(total_active_customers, 0), 2) AS repurchase_rate_pct FROM monthly_repurchase ORDER BY repurchase_rate_pct DESC;",12807.1,20.1,12827.2,2026-08-20 15:40:31

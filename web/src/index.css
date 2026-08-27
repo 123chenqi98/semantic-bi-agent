@@ -1,0 +1,195 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-50:  #F5F0FF;
+  --color-brand-100: #EADDFF;
+  --color-brand-500: #B758ED;
+  --color-brand-600: #A246D9;
+  --color-brand-700: #8933BF;
+
+  --color-bg-page:    #F9FAFD;
+  --color-bg-card:    #FFFFFF;
+  --color-bg-sidebar: #F9FAFD;
+  --color-bg-hover:   #F5F6F8;
+  --color-bg-active:  #F0EBFA;
+  --color-bg-subtle:  #FAFBFC;
+  --color-bg-tag:     #F5F0FF;
+  --color-bg-bubble:  #F9F5FF;
+  --color-bg-code:    #FFFFFF;
+
+  --color-border:      #F1F2F3;
+  --color-border-strong: #E3E5E8;
+  --color-divider:     #F1F2F3;
+
+  --color-text-primary:   #252931;
+  --color-text-secondary: #565960;
+  --color-text-tertiary:  #898B8F;
+  --color-text-placeholder: #B0B5BD;
+  --color-text-inverse:   #FFFFFF;
+
+  --color-success: #00B42A;
+  --color-danger:  #F53F3F;
+  --color-warning: #FF7D00;
+  --color-info:    #1E6FFF;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.03);
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
+  --shadow-focus: 0 0 0 3px rgba(183,88,237,0.12);
+
+  --font-sans: "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", Consolas, Monaco, "Courier New", monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-bg-page);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 14px;
+  line-height: 1.7;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+
+code, pre, .font-mono {
+  font-family: var(--font-mono);
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  outline: none;
+}
+
+input, textarea {
+  font-family: inherit;
+  outline: none;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #DDE0E4;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #B0B5BD;
+}
+
+.card {
+  background: #FFFFFF;
+  border: 1px solid #F1F2F3;
+  border-radius: 4px;
+}
+
+.card-header {
+  padding: 14px 20px;
+  background: #FBFCFD;
+  border-bottom: 1px solid #F1F2F3;
+}
+
+.brand-btn {
+  background: #B758ED;
+  color: #FFFFFF;
+  border-radius: 4px;
+  font-weight: 500;
+  transition: background 0.15s ease, transform 0.05s ease;
+}
+.brand-btn:hover { background: #A246D9; }
+.brand-btn:active { transform: translateY(1px); }
+.brand-btn:disabled {
+  background: #F2F3F5;
+  color: #C9CDD4;
+  cursor: not-allowed;
+}
+
+.outline-btn {
+  background: #FFFFFF;
+  color: #B758ED;
+  border: 1px solid #D9BAF7;
+  border-radius: 4px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+.outline-btn:hover {
+  background: #F5F0FF;
+  border-color: #B758ED;
+}
+
+.tab-active {
+  color: #B758ED;
+  border-bottom: 2px solid #B758ED;
+  font-weight: 500;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.pill-brand  { background: rgba(183,88,237,0.08); color: #B758ED; }
+.pill-success{ background: rgba(0,180,42,0.08);    color: #00B42A; }
+.pill-warning{ background: rgba(255,125,0,0.08);   color: #FF7D00; }
+.pill-info   { background: rgba(30,111,255,0.08);  color: #1E6FFF; }
+.pill-gray   { background: #F5F6F8; color: #565960; }
+
+.insight-note {
+  background: #FBFCFD;
+  border: 1px solid #EEF0F3;
+  border-radius: 4px;
+  padding: 20px 24px;
+}
+
+.data-table th {
+  font-size: 12px;
+  font-weight: 500;
+  color: #898B8F;
+  background: #FBFCFD;
+  padding: 14px 20px;
+  text-align: left;
+  border-bottom: 1px solid #F1F2F3;
+  white-space: nowrap;
+}
+.data-table td {
+  padding: 14px 20px;
+  color: #252931;
+  border-bottom: 1px solid #F1F2F3;
+  white-space: nowrap;
+}
+.data-table tbody tr:last-child td { border-bottom: none; }
+.data-table tbody tr:hover td { background: #FAFBFC; }
+
+.gradient-brand {
+  background: linear-gradient(135deg, #B758ED 0%, #D063EA 100%);
+}

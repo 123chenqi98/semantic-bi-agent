@@ -1,0 +1,26 @@
+﻿题号,问题,难度,问题类型,SQL执行,结果匹配,错误分类,错误原因,返回行数,LLM耗时,SQL耗时,总耗时,生成SQL摘要
+Q01,上月销售额多少？,简单,直接统计,✅ 成功,❌ 错误,🕐 时间语义错误,数值/文本不一致: 行0列0 'None' vs '5508311.27',1,2.6s,75ms,2.7s,SELECT SUM(amount) AS last_month_sales_amount FROM order_item WHERE pay_status = '已支付' AND strftime(...
+Q02,今年上半年华东区域的销售额是多少？,中等,直接统计,✅ 成功,❌ 错误,🕐 时间语义错误,数值/文本不一致: 行0列0 757782.45 vs 4441166.8,1,3.7s,13ms,3.7s,SELECT SUM(amount) AS east_china_h1_sales FROM order_item JOIN customer ON order_item.customer_id = ...
+Q03,2025年Q4电子产品的销售额是多少？,中等,直接统计,✅ 成功,✅ 正确,,,1,2.2s,10ms,2.2s,SELECT SUM(oi.amount) AS sales_amount FROM order_item oi JOIN product p ON oi.product_id = p.product...
+Q04,去年金卡会员的订单量是多少？,中等,直接统计,✅ 成功,✅ 正确,,,1,2.3s,9ms,2.3s,SELECT COUNT(DISTINCT o.order_id) AS gold_member_order_count FROM order_item o JOIN customer c ON o....
+Q05,2025年全年的客单价是多少？,中等,直接统计,✅ 成功,✅ 正确,,,1,1.4s,8ms,1.4s,"SELECT SUM(amount) / COUNT(DISTINCT order_id) AS aov FROM order_item WHERE strftime('%Y', order_date..."
+Q06,2025年每个月的销售额变化趋势是怎样的？,中等,趋势分析,✅ 成功,❌ 错误,📋 结果结构/格式错误,列数不一致 生成=3 vs 参考=2,12,13.1s,12ms,13.1s,"SELECT strftime('%Y-%m', order_date) AS month, SUM(amount) AS sales_amount, COUNT(DISTINCT order_id)..."
+Q07,近6个月的订单量变化趋势,中等,趋势分析,✅ 成功,❌ 错误,📋 结果结构/格式错误,行数不一致 生成=12 vs 参考=6,12,2.4s,13ms,2.4s,"SELECT strftime('%Y-%m', order_date) AS month, COUNT(DISTINCT order_id) AS order_count FROM order_it..."
+Q08,2025年各季度新客数的变化情况,困难,趋势分析,✅ 成功,❌ 错误,📏 指标口径错误,数值/文本不一致: 行0列0 '1.0' vs '2025Q1'; 行1列0 '2.0' vs '2025Q2'; 行2列0 '3.0' vs '2025Q3',4,15.8s,7ms,15.8s,"SELECT d.quarter AS quarter, COUNT(DISTINCT c.customer_id) AS new_customer_count FROM customer c INN..."
+Q09,2025年每个月的客单价，同时给出同比上月的环比变化,困难,趋势分析,✅ 成功,❌ 错误,📋 结果结构/格式错误,列数不一致 生成=5 vs 参考=4,12,4.6s,18ms,4.6s,"WITH monthly_metrics AS ( SELECT strftime('%Y-%m', order_date) AS year_month, SUM(amount) AS total_s..."
+Q10,各渠道按季度的销售额变化趋势,困难,趋势分析,✅ 成功,❌ 错误,📋 结果结构/格式错误,列数不一致 生成=4 vs 参考=3,24,3.0s,20ms,3.0s,"SELECT d.year AS year, d.quarter AS quarter, o.channel AS channel, SUM(o.amount) AS sales_amount FRO..."
+Q11,华东和华北2025年全年的销售额对比,中等,对比分析,✅ 成功,✅ 正确,,,2,3.3s,11ms,3.4s,"SELECT c.region, SUM(oi.amount) AS sales_amount FROM order_item oi JOIN customer c ON oi.customer_id..."
+Q12,金卡会员和普通会员在2025年Q4的订单量对比,中等,对比分析,✅ 成功,❌ 错误,📏 指标口径错误,数值/文本不一致: 行0列1 1028.0 vs 955.0; 行1列1 291.0 vs 265.0,2,2.6s,9ms,2.6s,"SELECT c.member_level, COUNT(DISTINCT o.order_id) AS order_count FROM order_item o JOIN customer c O..."
+Q13,线上APP渠道和线下门店渠道，哪个客单价更高？,中等,对比分析,✅ 成功,❌ 错误,❓ 其他错误,数值/文本不一致: 行0列1 5754.12700220022 vs 5532.46; 行1列1 6158.4554234150855 vs 6227.12,2,2.0s,10ms,2.1s,"SELECT channel, SUM(amount) / COUNT(DISTINCT order_id) AS aov FROM order_item WHERE channel IN ('线上A..."
+Q14,2025年全年 vs 2026年上半年的销售额对比,中等,对比分析,✅ 成功,❌ 错误,🏷 文本标签不一致,数值/文本不一致: 行0列0 '2025年全年' vs '2025全年'; 行1列0 '2026年上半年' vs '2026上半年',2,3.8s,24ms,3.9s,"SELECT CASE WHEN strftime('%Y', order_date) = '2025' THEN '2025年全年' WHEN strftime('%Y', order_date) ..."
+Q15,五大一级品类2025年全年销售额对比,中等,对比分析,✅ 成功,✅ 正确,,,5,2.4s,15ms,2.4s,"SELECT p.category AS product_category, SUM(oi.amount) AS total_sales_amount FROM order_item oi JOIN ..."
+Q16,一级品类中，销售额最高的Top3是哪些？（2025全年）,中等,排名分析,✅ 成功,✅ 正确,,,3,2.9s,11ms,2.9s,"SELECT p.category AS category, SUM(oi.amount) AS sales_amount FROM order_item oi JOIN product p ON o..."
+Q17,2026年上半年订单量最多的前5个城市是哪些？,中等,排名分析,✅ 成功,✅ 正确,,,5,2.6s,12ms,2.6s,"SELECT c.city, COUNT(DISTINCT o.order_id) AS order_count FROM order_item o JOIN customer c ON o.cust..."
+Q18,按区域来看，客单价最高的3个区域是？,中等,排名分析,✅ 成功,❌ 错误,❓ 其他错误,数值/文本不一致: 行0列1 6155.386891105569 vs 7194.69; 行1列0 '华中' vs '西北'; 行2列1 6231.523650503202 vs 6342.8,3,2.2s,7ms,2.2s,"SELECT c.region, SUM(oi.amount) / COUNT(DISTINCT oi.order_id) AS aov FROM order_item oi JOIN custome..."
+Q19,2025年新增付费客户数最多的10个城市,困难,排名分析,✅ 成功,✅ 正确,,,10,2.6s,12ms,2.6s,"SELECT c.city, COUNT(DISTINCT c.customer_id) AS new_paid_customer_count FROM customer c INNER JOIN o..."
+Q20,2025年销售额最低的5个品牌,中等,排名分析,✅ 成功,✅ 正确,,,5,2.2s,13ms,2.2s,"SELECT p.brand, SUM(oi.amount) AS total_sales FROM order_item oi JOIN product p ON oi.product_id = p..."
+Q21,7大区域的销售额占比（上月）,中等,占比分析,✅ 成功,❌ 错误,📋 结果结构/格式错误,行数不一致 生成=0 vs 参考=7,0,4.8s,10ms,4.8s,"WITH last_month_sales AS ( SELECT c.region, SUM(oi.amount) AS region_sales FROM order_item oi JOIN c..."
+Q22,2025年各渠道的订单量占比,中等,占比分析,✅ 成功,❌ 错误,📏 指标口径错误,数值/文本不一致: 行0列1 820.0 vs 767.0; 行1列1 619.0 vs 579.0; 行2列1 1636.0 vs 1505.0,4,3.2s,12ms,3.2s,"WITH channel_orders AS ( SELECT channel, COUNT(DISTINCT order_id) AS order_count FROM order_item WHE..."
+Q23,电子产品一级品类下，5个二级子品类的销售额占比（2025全年）,中等,占比分析,✅ 成功,✅ 正确,,,5,5.0s,10ms,5.1s,WITH category_total AS ( SELECT SUM(oi.amount) AS total_sales FROM order_item oi JOIN product p ON o...
+Q24,2025年哪个月的销售额环比上月跌幅最大？,困难,异常识别,✅ 成功,✅ 正确,,,1,5.7s,12ms,5.7s,"WITH monthly_sales AS ( SELECT strftime('%Y-%m', order_date) AS year_month, SUM(amount) AS sales_amo..."
+Q25,2025年复购率最高和最低的月份分别是？,困难,异常识别,✅ 成功,❌ 错误,📋 结果结构/格式错误,行数不一致 生成=2 vs 参考=12,2,12.8s,20ms,12.8s,"WITH monthly_first_purchase AS ( SELECT customer_id, MIN(strftime('%Y-%m', order_date)) AS first_pur..."
