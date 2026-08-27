@@ -1,9 +1,17 @@
 import { useState, type ReactNode } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
-import { CheckCircle2, XCircle, FlaskConical, Layers, Activity, ChevronRight, ChevronDown } from 'lucide-react';
+import { CheckCircle2, XCircle, FlaskConical, Layers, Activity, ChevronRight, ChevronDown, Users, Clock, Target, Award } from 'lucide-react';
 import { evaluationResults } from '../mock/data';
 import { ablationData } from '../mock/ablation';
 import SQLDiff from '../components/common/SQLDiff';
+import {
+  HUMAN_EVAL_META,
+  humanEvalParticipants,
+  groupASummary,
+  groupBSummary,
+  groupComparisonBar,
+  humanEvalConclusions,
+} from '../mock/humanEval';
 
 const TICK = { fontSize: 12, fill: '#898B8F' };
 const TICK_LABEL = { fontSize: 13, fill: '#252931' };
@@ -385,6 +393,225 @@ export default function EvaluationPage() {
                   </li>
                 ))}
               </ul>
+            </div>
+          </div>
+        </div>
+
+        {/* 用户研究 — 小规模人工评估 */}
+        <div className="overflow-hidden bg-white" style={{ border: '1px solid #ECEDF1', borderRadius: 4 }}>
+          <div style={{ background: 'linear-gradient(135deg, #FAF5FF 0%, #F5F0FF 100%)', borderBottom: '1px solid #ECEDF1', padding: '20px 24px' }}>
+            <div className="flex items-center justify-between" style={{ flexWrap: 'wrap', gap: 12 }}>
+              <div>
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Users size={16} style={{ color: '#B758ED' }} />
+                  <h3 className="text-[14px] font-semibold m-0" style={{ color: '#252931' }}>用户研究 · 小规模人工评估</h3>
+                  <span style={{ fontSize: 11, padding: '2px 8px', background: '#EADDFF', color: '#8B45C9', borderRadius: 4, fontWeight: 500 }}>A/B Test</span>
+                </div>
+                <p className="text-[12px] m-0" style={{ color: '#565960', lineHeight: 1.7, maxWidth: 720 }}>
+                  {HUMAN_EVAL_META.methodology}
+                </p>
+              </div>
+              <div className="flex items-center gap-4" style={{ fontSize: 12, color: '#565960' }}>
+                <div className="flex items-center gap-1.5"><Users size={13} style={{ color: '#898B8F' }} /><span><b style={{ color: '#252931' }}>{HUMAN_EVAL_META.totalParticipants}</b> 名参与者</span></div>
+                <div className="flex items-center gap-1.5"><Target size={13} style={{ color: '#898B8F' }} /><span><b style={{ color: '#252931' }}>{HUMAN_EVAL_META.questionCount}</b> 题/人</span></div>
+                <div className="flex items-center gap-1.5"><Clock size={13} style={{ color: '#898B8F' }} /><span><b style={{ color: '#252931' }}>{HUMAN_EVAL_META.durationMin}</b> 分钟</span></div>
+              </div>
+            </div>
+          </div>
+
+          {/* 4 个分组汇总指标卡 */}
+          <div style={{ padding: '20px 24px', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+            {[
+              {
+                icon: <Target size={15} />,
+                label: '一次提问正确率',
+                a: groupASummary.firstTryAccuracy,
+                b: groupBSummary.firstTryAccuracy,
+                unit: '%',
+                aBetter: 'higher',
+                aColor: '#22C55E', bColor: '#F53F3F',
+              },
+              {
+                icon: <Activity size={15} />,
+                label: '平均修正次数',
+                a: groupASummary.avgRetryCount,
+                b: groupBSummary.avgRetryCount,
+                unit: '次',
+                aBetter: 'lower',
+                aColor: '#22C55E', bColor: '#F53F3F',
+              },
+              {
+                icon: <Clock size={15} />,
+                label: '平均修正用时',
+                a: groupASummary.avgTimeToAnswerSec,
+                b: groupBSummary.avgTimeToAnswerSec,
+                unit: '秒',
+                aBetter: 'lower',
+                aColor: '#22C55E', bColor: '#F53F3F',
+              },
+              {
+                icon: <Award size={15} />,
+                label: 'SUS 可用性评分',
+                a: groupASummary.avgSusScore,
+                b: groupBSummary.avgSusScore,
+                unit: '/100',
+                aBetter: 'higher',
+                aColor: '#22C55E', bColor: '#F53F3F',
+              },
+            ].map((m, i) => {
+              const aBetter = m.aBetter === 'higher' ? m.a > m.b : m.a < m.b;
+              const delta = m.aBetter === 'higher' ? m.a - m.b : m.b - m.a;
+              return (
+                <div key={i} style={{ border: '1px solid #F1F2F3', borderRadius: 4, padding: 16, background: '#FBFCFD' }}>
+                  <div className="flex items-center gap-1.5 mb-3" style={{ color: '#898B8F', fontSize: 12 }}>
+                    <span style={{ color: '#B758ED' }}>{m.icon}</span>
+                    <span>{m.label}</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: '#898B8F', marginBottom: 2 }}>A 实验组</div>
+                      <div style={{ fontSize: 24, fontWeight: 600, color: m.aColor, lineHeight: 1, fontFamily: 'var(--font-mono)' }}>
+                        {m.a}<span style={{ fontSize: 12, fontWeight: 400, marginLeft: 2 }}>{m.unit}</span>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 11, color: '#898B8F', marginBottom: 2 }}>B 对照组</div>
+                      <div style={{ fontSize: 24, fontWeight: 600, color: m.bColor, lineHeight: 1, fontFamily: 'var(--font-mono)' }}>
+                        {m.b}<span style={{ fontSize: 12, fontWeight: 400, marginLeft: 2 }}>{m.unit}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 11, padding: '4px 8px', borderRadius: 3, display: 'inline-flex', alignItems: 'center', gap: 4,
+                    background: aBetter ? '#EAFBF1' : '#FFF1F0', color: aBetter ? '#0F8A2F' : '#C63838', fontWeight: 500 }}>
+                    {aBetter ? 'A 组优 ' : 'B 组优 '}
+                    {m.aBetter === 'higher' ? '+' : ''}{Number.isInteger(delta) ? delta : delta.toFixed(1)}
+                    {m.unit === '%' ? 'pp' : m.unit === '次' ? ' 次' : m.unit === '秒' ? ' 秒' : ' 分'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 双柱图 */}
+          <div style={{ padding: '0 24px 20px', display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 20 }}>
+            <div style={{ border: '1px solid #F1F2F3', borderRadius: 4, padding: 16, background: '#FFFFFF' }}>
+              <div className="text-[13px] font-medium mb-3" style={{ color: '#252931' }}>四项核心指标对比（A 紫 vs B 灰）</div>
+              <div style={{ width: '100%', height: 240 }}>
+                <ResponsiveContainer>
+                  <BarChart data={groupComparisonBar} margin={{ top: 8, right: 16, left: 0, bottom: 4 }} barGap={4}>
+                    <CartesianGrid {...GRID} />
+                    <XAxis dataKey="metric" tick={{ ...TICK, fontSize: 11 }} axisLine={AXIS_LINE} tickLine={TICK_LINE} interval={0} angle={-8} textAnchor="end" height={50} />
+                    <YAxis tick={TICK} axisLine={AXIS_LINE} tickLine={TICK_LINE} />
+                    <Tooltip {...TOOLTIP_PROPS} cursor={{ fill: 'rgba(183,88,237,0.06)' }} />
+                    <Bar dataKey={HUMAN_EVAL_META.groupAName} fill="#B758ED" radius={[3, 3, 0, 0]} maxBarSize={28}>
+                      <LabelList position="top" style={{ fontSize: 10, fill: '#8B45C9', fontWeight: 500 }} />
+                    </Bar>
+                    <Bar dataKey={HUMAN_EVAL_META.groupBName} fill="#B0B5BD" radius={[3, 3, 0, 0]} maxBarSize={28}>
+                      <LabelList position="top" style={{ fontSize: 10, fill: '#565960', fontWeight: 500 }} />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* 分组说明 */}
+            <div style={{ display: 'flex', flexDirection: 'column', rowGap: 10 }}>
+              <div style={{ border: '1px solid #E8D5FF', borderRadius: 4, padding: 14, background: '#FAF5FF' }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#B758ED' }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#5B2FA0' }}>A 组 · {groupASummary.participants} 人 · 本系统（语义层注入）</span>
+                </div>
+                <p className="m-0" style={{ fontSize: 12, color: '#5B2FA0', lineHeight: 1.7 }}>
+                  使用 NoSQL 经营分析助手，自带指标词典、时间锚点硬编码、SQL 优化对比和 Pipeline Trace，用户无需懂 SQL。
+                </p>
+              </div>
+              <div style={{ border: '1px solid #E5E6EB', borderRadius: 4, padding: 14, background: '#FAFBFC' }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#B0B5BD' }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#4E5969' }}>B 组 · {groupBSummary.participants} 人 · 纯 LLM 通用对话</span>
+                </div>
+                <p className="m-0" style={{ fontSize: 12, color: '#4E5969', lineHeight: 1.7 }}>
+                  使用同一底座 LLM 的通用对话界面，仅提供数据库表结构 DDL，无任何业务知识注入。
+                </p>
+              </div>
+              <div style={{ border: '1px dashed #D9BAF7', borderRadius: 4, padding: 12, background: '#FCFBFE', fontSize: 12, color: '#8B45C9', lineHeight: 1.7 }}>
+                <b>变量控制：</b>同一模型、同一 8 题、同一 15 分钟；唯一变量是 Prompt 中是否注入指标语义层。所有参与者均无 SQL 背景。
+              </div>
+            </div>
+          </div>
+
+          {/* 参与者逐题矩阵 */}
+          <div style={{ padding: '0 24px 20px' }}>
+            <div className="text-[13px] font-medium mb-3" style={{ color: '#252931' }}>参与者逐题表现明细（{humanEvalParticipants.length} 人 × {HUMAN_EVAL_META.questionCount} 题 = {humanEvalParticipants.length * HUMAN_EVAL_META.questionCount} 数据点）</div>
+            <div className="overflow-x-auto">
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: '#FBFCFD' }}>
+                    <th style={{ textAlign: 'left', fontWeight: 500, fontSize: 11, color: '#898B8F', padding: '10px 12px', borderBottom: '1px solid #F1F2F3' }}>参与者</th>
+                    <th style={{ textAlign: 'left', fontWeight: 500, fontSize: 11, color: '#898B8F', padding: '10px 12px', borderBottom: '1px solid #F1F2F3' }}>身份</th>
+                    <th style={{ textAlign: 'center', fontWeight: 500, fontSize: 11, color: '#898B8F', padding: '10px 8px', borderBottom: '1px solid #F1F2F3' }}>组</th>
+                    {humanEvalParticipants[0].questions.map(q => (
+                      <th key={q.qid} style={{ textAlign: 'center', fontWeight: 500, fontSize: 11, color: '#898B8F', padding: '10px 6px', borderBottom: '1px solid #F1F2F3', fontFamily: 'var(--font-mono)' }}>{q.qid}</th>
+                    ))}
+                    <th style={{ textAlign: 'center', fontWeight: 500, fontSize: 11, color: '#898B8F', padding: '10px 12px', borderBottom: '1px solid #F1F2F3' }}>一次正确率</th>
+                    <th style={{ textAlign: 'center', fontWeight: 500, fontSize: 11, color: '#898B8F', padding: '10px 12px', borderBottom: '1px solid #F1F2F3' }}>平均用时</th>
+                    <th style={{ textAlign: 'center', fontWeight: 500, fontSize: 11, color: '#898B8F', padding: '10px 12px', borderBottom: '1px solid #F1F2F3' }}>SUS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {humanEvalParticipants.map((p, i) => {
+                    const correct = p.questions.filter(q => q.correctFirstTry).length;
+                    const acc = Math.round(correct / p.questions.length * 100);
+                    const avgT = Math.round(p.questions.reduce((s, q) => s + q.timeToAnswerSec, 0) / p.questions.length);
+                    const isA = p.group === 'A';
+                    return (
+                      <tr key={p.id} style={{ borderBottom: i < humanEvalParticipants.length - 1 ? '1px solid #F5F6F8' : 'none' }}>
+                        <td style={{ padding: '10px 12px', fontWeight: 500, color: '#252931' }}>{p.alias}</td>
+                        <td style={{ padding: '10px 12px', color: '#565960' }}>{p.role}</td>
+                        <td style={{ textAlign: 'center', padding: '10px 8px' }}>
+                          <span style={{
+                            display: 'inline-block', padding: '2px 8px', fontSize: 11, fontWeight: 600, borderRadius: 3,
+                            background: isA ? '#F5F0FF' : '#F1F2F3', color: isA ? '#8B45C9' : '#898B8F',
+                          }}>{p.group}</span>
+                        </td>
+                        {p.questions.map(q => (
+                          <td key={q.qid} style={{ textAlign: 'center', padding: '8px 6px' }}>
+                            <div title={`${q.question}\n${q.correctFirstTry ? '一次答对' : `修正 ${q.retryCount} 次`} · ${q.timeToAnswerSec}s${q.notes ? '\n' + q.notes : ''}`}
+                              style={{
+                                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                width: 32, height: 24, borderRadius: 3, fontSize: 11, fontFamily: 'var(--font-mono)',
+                                background: q.correctFirstTry ? '#EAFBF1' : q.retryCount <= 1 ? '#FFF9E6' : '#FFF1F0',
+                                color: q.correctFirstTry ? '#0F8A2F' : q.retryCount <= 1 ? '#B76E00' : '#C63838',
+                                fontWeight: 600,
+                              }}>
+                              {q.correctFirstTry ? '✓' : `×${q.retryCount}`}
+                            </div>
+                          </td>
+                        ))}
+                        <td style={{ textAlign: 'center', padding: '10px 12px', fontFamily: 'var(--font-mono)', fontWeight: 600, color: acc >= 80 ? '#0F8A2F' : acc >= 50 ? '#B76E00' : '#C63838' }}>{acc}%</td>
+                        <td style={{ textAlign: 'center', padding: '10px 12px', fontFamily: 'var(--font-mono)', color: '#565960' }}>{avgT}s</td>
+                        <td style={{ textAlign: 'center', padding: '10px 12px', fontFamily: 'var(--font-mono)', fontWeight: 600, color: isA ? '#0F8A2F' : '#B76E00' }}>{p.susScore}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[11px] m-0 mt-2" style={{ color: '#B0B5BD', lineHeight: 1.7 }}>
+              ✓ 一次答对（绿） · ×1 经 1 次修正后答对（黄） · ×2+ 多次修正仍答错（红）；鼠标悬停单元格可查看每题耗时与备注。
+            </p>
+          </div>
+
+          {/* 结论卡 */}
+          <div style={{ padding: '0 24px 24px' }}>
+            <div className="text-[13px] font-medium mb-3" style={{ color: '#252931' }}>💬 研究结论</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              {humanEvalConclusions.map((c, i) => (
+                <div key={i} style={{ background: '#FBFCFD', border: '1px solid #F1F2F3', borderRadius: 4, padding: 14, borderLeft: '3px solid #B758ED' }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#252931', marginBottom: 6 }}>{i + 1}. {c.title}</div>
+                  <p className="m-0" style={{ fontSize: 12, color: '#565960', lineHeight: 1.75 }}>{c.detail}</p>
+                </div>
+              ))}
             </div>
           </div>
         </div>
