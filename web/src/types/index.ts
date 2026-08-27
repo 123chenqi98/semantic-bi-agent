@@ -20,6 +20,8 @@ export interface QueryResult {
   rows: (string | number | null)[][];
   rowCount: number;
   executionTimeMs?: number;
+  success?: boolean;
+  error?: string | null;
 }
 
 // 分析摘要
@@ -27,6 +29,23 @@ export interface AnalysisSummary {
   key_findings: string[];
   trends?: string;
   anomalies?: string[];
+}
+
+// Pipeline Trace：语义层处理轨迹（5 步）
+export interface PipelineStep {
+  step: number;
+  name: string;
+  status: 'ok' | 'warn' | 'error';
+  detail: string;
+}
+
+export interface PipelineTrace {
+  mode: string;
+  baseline_snapshot: { sql: string; success: boolean; row_count: number; error?: string | null };
+  sql_snapshot: string;
+  rules_applied: string[];
+  errors_corrected: string[];
+  steps: PipelineStep[];
 }
 
 // AI回复消息
@@ -59,6 +78,8 @@ export interface AIMessage {
   dictResult?: Metric;
   sqlSuggestions?: string[];
   isHelp?: boolean;
+  pipelineTrace?: PipelineTrace;
+  baselineResult?: QueryResult;
 }
 
 // 用户消息

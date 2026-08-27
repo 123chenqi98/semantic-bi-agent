@@ -1,5 +1,7 @@
-import { Sparkles, Lightbulb, BookOpen, Clock, Code2, AlertTriangle, HelpCircle, BarChart3, FlaskConical, Trash2, Zap } from 'lucide-react';
+import { useState } from 'react';
+import { Sparkles, Lightbulb, BookOpen, Clock, Code2, AlertTriangle, HelpCircle, BarChart3, FlaskConical, Trash2, Zap, ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle } from 'lucide-react';
 import SQLBlock from '../common/SQLBlock';
+import SQLDiff from '../common/SQLDiff';
 import ResultTable from '../common/ResultTable';
 import type { AIMessage as AIMessageType } from '../../types';
 import { useApp } from '../../store/ChatContext';
@@ -129,6 +131,7 @@ export default function AIMessageCard({ message }: AIMessageCardProps) {
   const { state } = useApp();
   const forceShowBaseline = message.skillTags?.includes('sql');
   const showBaseline = state.showBaselineCompare || forceShowBaseline;
+  const [traceOpen, setTraceOpen] = useState(false);
 
   if (message.isLoading) {
     return (
@@ -210,6 +213,17 @@ export default function AIMessageCard({ message }: AIMessageCardProps) {
             )}
             {message.sql && <SQLBlock sql={message.sql} label="语义优化后" variant="experiment" defaultOpen={!showBaseline} />}
 
+            {showBaseline && message.baselineSql && message.sql && (
+              <div style={{ marginTop: 8 }}>
+                <SQLDiff
+                  baselineSql={message.baselineSql}
+                  optimizedSql={message.sql}
+                  title="基线 vs 语义优化 SQL 差异对比"
+                  defaultOpen={forceShowBaseline}
+                />
+              </div>
+            )}
+
             {message.result && <ResultTable result={message.result} title="查询结果" />}
           </>
         )}
@@ -244,6 +258,84 @@ export default function AIMessageCard({ message }: AIMessageCardProps) {
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {message.pipelineTrace && (
+          <div style={{ marginTop: 16, border: '1px solid #ECEDF1', borderRadius: 4, background: '#FBFCFD' }}>
+            <button
+              type="button"
+              onClick={() => setTraceOpen(v => !v)}
+              className="w-full flex items-center justify-between text-left"
+              style={{ padding: '12px 16px', background: 'transparent', border: 'none', cursor: 'pointer' }}
+            >
+              <div className="flex items-center gap-2" style={{ color: '#252931', fontSize: 13, fontWeight: 500 }}>
+                <Activity size={14} style={{ color: '#B758ED' }} />
+                <span>语义层 Pipeline Trace · {message.pipelineTrace.mode}</span>
+                <span className="text-[11px] font-normal" style={{ color: '#898B8F' }}>
+                  ({message.pipelineTrace.steps.length} 步 · 命中 {message.pipelineTrace.rules_applied.length} 条规则
+                  {message.pipelineTrace.errors_corrected.length
+                    ? ` · 纠正 ${message.pipelineTrace.errors_corrected.length} 项典型错误`
+                    : ''})
+                </span>
+              </div>
+              {traceOpen
+                ? <ChevronDown size={14} style={{ color: '#898B8F' }} />
+                : <ChevronRight size={14} style={{ color: '#898B8F' }} />}
+            </button>
+            {traceOpen && (
+              <div style={{ padding: '0 16px 16px 16px', display: 'flex', flexDirection: 'column', rowGap: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '28px 1fr', rowGap: 12 }}>
+                  {message.pipelineTrace.steps.map(s => (
+                    <>
+                      <div className="flex items-start justify-center pt-0.5">
+                        {s.status === 'ok'
+                          ? <CheckCircle2 size={16} style={{ color: '#22C55E' }} />
+                          : s.status === 'error'
+                            ? <XCircle size={16} style={{ color: '#EF4444' }} />
+                            : <AlertTriangle size={16} style={{ color: '#F59E0B' }} />}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 500, color: '#252931' }}>
+                          Step {s.step} · {s.name}
+                        </div>
+                        <div style={{ fontSize: 12, lineHeight: 1.8, color: '#565960', marginTop: 4 }}>
+                          {s.detail}
+                        </div>
+                      </div>
+                    </>
+                  ))}
+                </div>
+                <div style={{ borderTop: '1px solid #F1F2F3', paddingTop: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: '#252931', marginBottom: 8 }}>
+                    ✅ 本次命中的语义规则
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {message.pipelineTrace.rules_applied.map((r, i) => (
+                      <span key={i} className="text-[11px]"
+                        style={{ padding: '3px 8px', background: '#F0EBFA', color: '#8B45C9', borderRadius: 4 }}>
+                        {r}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                {message.pipelineTrace.errors_corrected.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: '#252931', marginBottom: 8 }}>
+                      ⚠️ 纠正的基线典型错误
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', rowGap: 6 }}>
+                      {message.pipelineTrace.errors_corrected.map((e, i) => (
+                        <div key={i} className="text-[12px]"
+                          style={{ padding: 8, background: '#FFF3E8', border: '1px solid #FFE0C2', color: '#874A20', borderRadius: 4, lineHeight: 1.8 }}>
+                          {e}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -103,10 +103,43 @@ function attachSkillEnhancements(
 export default function ChatPage() {
   const { state, dispatch, currentConversation } = useApp();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const disableBackend = (import.meta as any).env?.VITE_DISABLE_BACKEND === '1';
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentConversation.messages, currentConversation.messages.length]);
+
+  const callBackendChat = async (question: string): Promise<Partial<AIMessageType> | null> => {
+    if (disableBackend) return null;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 20000);
+      const resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (!resp.ok) return null;
+      const j = await resp.json();
+      const ai: Partial<AIMessageType> = {
+        question: j.question ?? question,
+        matchedMetrics: j.matchedMetrics ?? [],
+        timeRange: j.timeRange,
+        matchedDimensions: j.matchedDimensions,
+        sql: j.sql ?? '',
+        baselineSql: j.baselineSql,
+        result: j.result,
+        baselineResult: j.baselineResult,
+        summary: j.summary ?? { key_findings: [] },
+        pipelineTrace: j.pipelineTrace,
+      };
+      return ai;
+    } catch {
+      return null;
+    }
+  };
 
   const mockAIReply = (question: string): Partial<AIMessageType> => {
     const q = question.toLowerCase();
@@ -335,14 +368,26 @@ LEFT JOIN date_dim dd ON oi.order_date=dd.date WHERE oi.pay_status='已支付' G
     const questionForAI = cleaned || rawQuestion;
 
     dispatch({ type: 'ADD_MESSAGE', payload: { conversationId: convId, message: { id: aiId, type: 'ai', question: questionForAI, matchedMetrics: [], sql: '', isLoading: true, timestamp: Date.now() } as AIMessageType } });
-    setTimeout(() => {
-      let reply = mockAIReply(questionForAI);
+
+    // 先尝试后端（真实 SQLite 执行），失败回退 Mock
+    (async () => {
+      let reply: Partial<AIMessageType> | null = null;
+      try {
+        reply = await callBackendChat(questionForAI);
+      } catch {
+        reply = null;
+      }
+      if (!reply) {
+        // 小延迟模拟思考，然后走本地 Mock
+        await new Promise(r => setTimeout(r, 400 + Math.random() * 500));
+        reply = mockAIReply(questionForAI);
+      }
       if (tags.length > 0) {
         reply = attachSkillEnhancements(reply, tags, questionForAI);
       }
       dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId, updates: { ...reply, isLoading: false } as Partial<AIMessageType> } });
       dispatch({ type: 'SET_LOADING', payload: false });
-    }, 600 + Math.random() * 600);
+    })();
   };
 
   const hasMessages = currentConversation.messages.length > 0;
