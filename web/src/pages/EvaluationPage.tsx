@@ -1,7 +1,9 @@
+import { useState, type ReactNode } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
-import { CheckCircle2, XCircle, FlaskConical, Layers, Activity } from 'lucide-react';
+import { CheckCircle2, XCircle, FlaskConical, Layers, Activity, ChevronRight, ChevronDown } from 'lucide-react';
 import { evaluationResults } from '../mock/data';
 import { ablationData } from '../mock/ablation';
+import SQLDiff from '../components/common/SQLDiff';
 
 const TICK = { fontSize: 12, fill: '#898B8F' };
 const TICK_LABEL = { fontSize: 13, fill: '#252931' };
@@ -49,6 +51,12 @@ const errorCauses = ablationData.errorCauseData;
 const totalErrorItems = errorCauses.reduce((s, e) => s + e.count, 0);
 
 export default function EvaluationPage() {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleRow = (qid: string) => {
+    const next = new Set(expanded);
+    if (next.has(qid)) next.delete(qid); else next.add(qid);
+    setExpanded(next);
+  };
   const total = evaluationResults.length;
   const baselineCorrect = evaluationResults.filter(r => r.baselineCorrect).length;
   const experimentCorrect = evaluationResults.filter(r => r.experimentCorrect).length;
@@ -399,40 +407,81 @@ export default function EvaluationPage() {
                 </tr>
               </thead>
               <tbody>
-                {evaluationResults.map((r, i) => (
-                  <tr
-                    key={r.questionId}
-                    style={{ borderBottom: i < total - 1 ? '1px solid #F1F2F3' : 'none' }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#FAFBFC'; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-                  >
-                    <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: '#898B8F', padding: '14px 24px' }}>{r.questionId}</td>
-                    <td style={{ color: '#252931', padding: '14px 24px', lineHeight: 1.7 }}>{r.question}</td>
-                    <td style={{ textAlign: 'center', padding: '14px 24px' }}>
-                      <span
-                        style={{
-                          display: 'inline-flex', alignItems: 'center',
-                          padding: '3px 10px', fontSize: 12, fontWeight: 500, borderRadius: 4,
-                          background: r.difficulty === '简单' ? '#F0FFF4' : r.difficulty === '中等' ? '#FFF9E6' : '#FFF1F0',
-                          color: r.difficulty === '简单' ? '#0F8A2F' : r.difficulty === '中等' ? '#B76E00' : '#C63838',
-                        }}
-                      >{r.difficulty}</span>
-                    </td>
-                    <td style={{ textAlign: 'center', padding: '14px 24px' }}>
-                      {r.baselineCorrect
-                        ? <CheckCircle2 size={16} style={{ color: '#00B42A', display: 'inline', verticalAlign: 'middle' }} />
-                        : <XCircle size={16} style={{ color: '#F53F3F', display: 'inline', verticalAlign: 'middle' }} />}
-                    </td>
-                    <td style={{ textAlign: 'center', padding: '14px 24px' }}>
-                      {r.experimentCorrect
-                        ? <CheckCircle2 size={16} style={{ color: '#00B42A', display: 'inline', verticalAlign: 'middle' }} />
-                        : <XCircle size={16} style={{ color: '#F53F3F', display: 'inline', verticalAlign: 'middle' }} />}
-                    </td>
-                    <td style={{ fontSize: 13, color: r.baselineErrorReason ? '#C63838' : '#0F8A2F', padding: '14px 24px', lineHeight: 1.7 }}>
-                      {r.baselineErrorReason || '正确'}
-                    </td>
-                  </tr>
-                ))}
+                {evaluationResults.map((r, i) => {
+                  const isOpen = expanded.has(r.questionId);
+                  const hasDiff = Boolean(r.baselineSql && r.optimizedSql);
+                  const Chevron = isOpen ? ChevronDown : ChevronRight;
+                  const nextBorder = i < total - 1 && !isOpen;
+                  const rows: ReactNode[] = [];
+                  rows.push(
+                    <tr
+                      key={r.questionId}
+                      style={{ borderBottom: nextBorder ? '1px solid #F1F2F3' : 'none' }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#FAFBFC'; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                    >
+                      <td style={{ padding: '14px 0 14px 24px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <button
+                            type="button"
+                            onClick={() => hasDiff && toggleRow(r.questionId)}
+                            style={{
+                              width: 20, height: 20, borderRadius: 4,
+                              border: 'none', padding: 0, background: 'transparent',
+                              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                              cursor: hasDiff ? 'pointer' : 'default',
+                              color: hasDiff ? '#898B8F' : 'transparent',
+                            }}
+                            aria-label={isOpen ? '收起差异对比' : '展开差异对比'}
+                          >
+                            <Chevron size={14} />
+                          </button>
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: '#898B8F' }}>{r.questionId}</span>
+                        </div>
+                      </td>
+                      <td style={{ color: '#252931', padding: '14px 24px', lineHeight: 1.7 }}>{r.question}</td>
+                      <td style={{ textAlign: 'center', padding: '14px 24px' }}>
+                        <span
+                          style={{
+                            display: 'inline-flex', alignItems: 'center',
+                            padding: '3px 10px', fontSize: 12, fontWeight: 500, borderRadius: 4,
+                            background: r.difficulty === '简单' ? '#F0FFF4' : r.difficulty === '中等' ? '#FFF9E6' : '#FFF1F0',
+                            color: r.difficulty === '简单' ? '#0F8A2F' : r.difficulty === '中等' ? '#B76E00' : '#C63838',
+                          }}
+                        >{r.difficulty}</span>
+                      </td>
+                      <td style={{ textAlign: 'center', padding: '14px 24px' }}>
+                        {r.baselineCorrect
+                          ? <CheckCircle2 size={16} style={{ color: '#00B42A', display: 'inline', verticalAlign: 'middle' }} />
+                          : <XCircle size={16} style={{ color: '#F53F3F', display: 'inline', verticalAlign: 'middle' }} />}
+                      </td>
+                      <td style={{ textAlign: 'center', padding: '14px 24px' }}>
+                        {r.experimentCorrect
+                          ? <CheckCircle2 size={16} style={{ color: '#00B42A', display: 'inline', verticalAlign: 'middle' }} />
+                          : <XCircle size={16} style={{ color: '#F53F3F', display: 'inline', verticalAlign: 'middle' }} />}
+                      </td>
+                      <td style={{ fontSize: 13, color: r.baselineErrorReason ? '#C63838' : '#0F8A2F', padding: '14px 24px', lineHeight: 1.7 }}>
+                        {r.baselineErrorReason || '正确'}
+                      </td>
+                    </tr>
+                  );
+                  if (isOpen && hasDiff) {
+                    rows.push(
+                      <tr key={r.questionId + '-diff'} style={{ borderBottom: i < total - 1 ? '1px solid #F1F2F3' : 'none' }}>
+                        <td colSpan={6} style={{ padding: '0 24px 16px 48px', background: '#FBFCFD' }}>
+                          <SQLDiff
+                            baselineSql={r.baselineSql!}
+                            optimizedSql={r.optimizedSql!}
+                            compact
+                            defaultOpen
+                            title={`${r.questionId} · 基线 vs 语义优化 SQL 差异`}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  }
+                  return rows;
+                })}
               </tbody>
             </table>
           </div>

@@ -123,31 +123,198 @@ export const timeSemantics = [
 
 // 实验评测真实结果
 export const evaluationResults: EvaluationResult[] = [
-  { questionId: 'Q01', question: '上月销售额多少？', difficulty: '简单', questionType: '直接统计', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '使用date(\'now\')动态时间函数，返回空值' },
-  { questionId: 'Q02', question: '今年上半年华东区域的销售额是多少？', difficulty: '中等', questionType: '直接统计', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '"今年"被错误理解为2025年，数值偏差大' },
+  { questionId: 'Q01', question: '上月销售额多少？', difficulty: '简单', questionType: '直接统计', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '使用date(\'now\')动态时间函数，返回空值',
+    baselineSql: `SELECT SUM(amount) AS last_month_sales_amount
+FROM order_item
+WHERE pay_status = '已支付'
+  AND strftime('%Y-%m', order_date) = strftime('%Y-%m', date('now', '-1 month'));`,
+    optimizedSql: `SELECT ROUND(SUM(amount), 2) AS sales_amount
+FROM order_item
+WHERE pay_status = '已支付'
+  AND order_date BETWEEN '2026-06-01' AND '2026-06-30';` },
+  { questionId: 'Q02', question: '今年上半年华东区域的销售额是多少？', difficulty: '中等', questionType: '直接统计', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '"今年"被错误理解为2025年，数值偏差大',
+    baselineSql: `SELECT ROUND(SUM(oi.amount),2) AS sales_amount
+FROM order_item oi JOIN customer c ON oi.customer_id=c.customer_id
+WHERE c.region='华东'
+  AND oi.order_date BETWEEN '2025-01-01' AND '2025-06-30';`,
+    optimizedSql: `SELECT ROUND(SUM(oi.amount),2) AS sales_amount
+FROM order_item oi LEFT JOIN customer c ON oi.customer_id=c.customer_id
+WHERE oi.pay_status='已支付'
+  AND c.region='华东'
+  AND oi.order_date BETWEEN '2026-01-01' AND '2026-06-30';` },
   { questionId: 'Q03', question: '2025年Q4电子产品的销售额是多少？', difficulty: '中等', questionType: '直接统计', baselineCorrect: true, experimentCorrect: true },
   { questionId: 'Q04', question: '去年金卡会员的订单量是多少？', difficulty: '中等', questionType: '直接统计', baselineCorrect: true, experimentCorrect: true },
   { questionId: 'Q05', question: '2025年全年的客单价是多少？', difficulty: '中等', questionType: '直接统计', baselineCorrect: true, experimentCorrect: true },
-  { questionId: 'Q06', question: '2025年每个月的销售额变化趋势是怎样的？', difficulty: '中等', questionType: '趋势分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '多返回订单量列，列数不一致' },
-  { questionId: 'Q07', question: '近6个月的订单量变化趋势', difficulty: '中等', questionType: '趋势分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '"近6个月"被错误算成12个月，行数翻倍' },
-  { questionId: 'Q08', question: '2025年各季度新客数的变化情况', difficulty: '困难', questionType: '趋势分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '新客用register_date统计（错误定义），季度标签用纯数字' },
-  { questionId: 'Q09', question: '2025年每个月的客单价，同时给出同比上月的环比变化', difficulty: '困难', questionType: '趋势分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '缺少上期值列，列数不一致' },
-  { questionId: 'Q10', question: '各渠道按季度的销售额变化趋势', difficulty: '困难', questionType: '趋势分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '维度列顺序错误（季度在前渠道在后），数据错位' },
+  { questionId: 'Q06', question: '2025年每个月的销售额变化趋势是怎样的？', difficulty: '中等', questionType: '趋势分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '多返回订单量列，列数不一致',
+    baselineSql: `SELECT strftime('%Y-%m', order_date) AS month,
+       ROUND(SUM(amount),2) AS sales_amount,
+       COUNT(DISTINCT order_id) AS order_count
+FROM order_item
+WHERE pay_status='已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31'
+GROUP BY month ORDER BY month;`,
+    optimizedSql: `SELECT strftime('%Y-%m', order_date) AS month,
+       ROUND(SUM(amount),2) AS sales_amount
+FROM order_item
+WHERE pay_status='已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31'
+GROUP BY month ORDER BY month;` },
+  { questionId: 'Q07', question: '近6个月的订单量变化趋势', difficulty: '中等', questionType: '趋势分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '"近6个月"被错误算成12个月，行数翻倍',
+    baselineSql: `SELECT strftime('%Y-%m', order_date) AS month, COUNT(DISTINCT order_id)
+FROM order_item WHERE pay_status='已支付' AND order_date >= date('now','-6 months')
+GROUP BY month;`,
+    optimizedSql: `SELECT strftime('%Y-%m', order_date) AS month, COUNT(DISTINCT order_id) AS order_count
+FROM order_item WHERE pay_status = '已支付'
+  AND order_date BETWEEN '2026-01-01' AND '2026-06-30'
+GROUP BY month ORDER BY month;` },
+  { questionId: 'Q08', question: '2025年各季度新客数的变化情况', difficulty: '困难', questionType: '趋势分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '新客用register_date统计（错误定义），季度标签用纯数字',
+    baselineSql: `SELECT strftime('%m', register_date)/3+1 AS quarter, COUNT(*)
+FROM customer WHERE register_date BETWEEN '2025-01-01' AND '2025-12-31'
+GROUP BY quarter;`,
+    optimizedSql: `WITH customer_first_pay AS (
+    SELECT customer_id, MIN(order_date) AS first_pay_date
+    FROM order_item WHERE pay_status = '已支付' GROUP BY customer_id
+)
+SELECT
+    CASE
+        WHEN first_pay_date BETWEEN '2025-01-01' AND '2025-03-31' THEN '2025Q1'
+        WHEN first_pay_date BETWEEN '2025-04-01' AND '2025-06-30' THEN '2025Q2'
+        WHEN first_pay_date BETWEEN '2025-07-01' AND '2025-09-30' THEN '2025Q3'
+        WHEN first_pay_date BETWEEN '2025-10-01' AND '2025-12-31' THEN '2025Q4'
+    END AS quarter,
+    COUNT(DISTINCT customer_id) AS new_customer_count
+FROM customer_first_pay
+WHERE first_pay_date BETWEEN '2025-01-01' AND '2025-12-31'
+GROUP BY quarter
+ORDER BY quarter;` },
+  { questionId: 'Q09', question: '2025年每个月的客单价，同时给出同比上月的环比变化', difficulty: '困难', questionType: '趋势分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '缺少上期值列，列数不一致',
+    baselineSql: `WITH monthly AS (
+    SELECT strftime('%Y-%m', order_date) AS month,
+           AVG(amount) AS aov
+    FROM order_item WHERE order_date BETWEEN '2025-01-01' AND '2025-12-31'
+    GROUP BY month
+)
+SELECT month, aov,
+       ROUND((aov - LAG(aov) OVER (ORDER BY month)) * 100.0 / NULLIF(LAG(aov) OVER (ORDER BY month),0), 2) AS mom_change_pct
+FROM monthly ORDER BY month;`,
+    optimizedSql: `WITH monthly AS (
+    SELECT strftime('%Y-%m', order_date) AS month,
+           ROUND(SUM(amount)*1.0/NULLIF(COUNT(DISTINCT order_id),0),2) AS aov
+    FROM order_item WHERE pay_status='已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31'
+    GROUP BY month
+)
+SELECT month, aov, LAG(aov) OVER (ORDER BY month) AS prev_aov,
+       ROUND((aov - LAG(aov) OVER (ORDER BY month)) * 100.0 / NULLIF(LAG(aov) OVER (ORDER BY month),0), 2) AS mom_change_pct
+FROM monthly ORDER BY month;` },
+  { questionId: 'Q10', question: '各渠道按季度的销售额变化趋势', difficulty: '困难', questionType: '趋势分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '维度列顺序错误（季度在前渠道在后），数据错位',
+    baselineSql: `SELECT dd.season_name AS quarter, oi.channel, SUM(oi.amount) AS sales_amount
+FROM order_item oi LEFT JOIN date_dim dd ON oi.order_date=dd.date
+WHERE oi.pay_status='已支付'
+GROUP BY quarter, oi.channel ORDER BY quarter, oi.channel;`,
+    optimizedSql: `SELECT oi.channel, dd.season_name AS quarter, ROUND(SUM(oi.amount),2) AS sales_amount
+FROM order_item oi LEFT JOIN date_dim dd ON oi.order_date=dd.date
+WHERE oi.pay_status='已支付' GROUP BY oi.channel, dd.season_name
+ORDER BY oi.channel, quarter;` },
   { questionId: 'Q11', question: '华东和华北2025年全年的销售额对比', difficulty: '中等', questionType: '对比分析', baselineCorrect: true, experimentCorrect: true },
-  { questionId: 'Q12', question: '金卡会员和普通会员在2025年Q4的订单量对比', difficulty: '中等', questionType: '对比分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: 'JOIN date_dim导致时间过滤范围偏差，数值错误' },
-  { questionId: 'Q13', question: '线上APP渠道和线下门店渠道，哪个客单价更高？', difficulty: '中等', questionType: '对比分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '默认时间范围取全量而非上月，数值偏差' },
-  { questionId: 'Q14', question: '2025年全年 vs 2026年上半年的销售额对比', difficulty: '中等', questionType: '对比分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '时间段标签文字多了"年"字，不匹配' },
+  { questionId: 'Q12', question: '金卡会员和普通会员在2025年Q4的订单量对比', difficulty: '中等', questionType: '对比分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: 'JOIN date_dim导致时间过滤范围偏差，数值错误',
+    baselineSql: `SELECT c.member_level, COUNT(DISTINCT oi.order_id) AS order_count
+FROM order_item oi
+JOIN customer c ON oi.customer_id=c.customer_id
+JOIN date_dim dd ON oi.order_date=dd.date
+WHERE dd.season_name='2025Q4'
+GROUP BY c.member_level;`,
+    optimizedSql: `SELECT c.member_level, COUNT(DISTINCT oi.order_id) AS order_count
+FROM order_item oi LEFT JOIN customer c ON oi.customer_id=c.customer_id
+WHERE oi.pay_status='已支付'
+  AND oi.order_date BETWEEN '2025-10-01' AND '2025-12-31'
+  AND c.member_level IN ('金卡会员','普通会员')
+GROUP BY c.member_level ORDER BY order_count DESC;` },
+  { questionId: 'Q13', question: '线上APP渠道和线下门店渠道，哪个客单价更高？', difficulty: '中等', questionType: '对比分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '默认时间范围取全量而非上月，数值偏差',
+    baselineSql: `SELECT channel, AVG(amount) AS aov
+FROM order_item GROUP BY channel ORDER BY aov DESC;`,
+    optimizedSql: `SELECT channel,
+       ROUND(SUM(amount)*1.0/NULLIF(COUNT(DISTINCT order_id),0),2) AS aov
+FROM order_item WHERE pay_status='已支付' AND order_date BETWEEN '2026-06-01' AND '2026-06-30'
+GROUP BY channel ORDER BY aov DESC;` },
+  { questionId: 'Q14', question: '2025年全年 vs 2026年上半年的销售额对比', difficulty: '中等', questionType: '对比分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '时间段标签文字多了"年"字，不匹配',
+    baselineSql: `SELECT
+    CASE WHEN order_date BETWEEN '2025-01-01' AND '2025-12-31' THEN '2025年全年'
+         WHEN order_date BETWEEN '2026-01-01' AND '2026-06-30' THEN '2026年上半年'
+    END AS period_label,
+    ROUND(SUM(amount),2) AS sales_amount
+FROM order_item GROUP BY period_label;`,
+    optimizedSql: `SELECT
+    CASE WHEN order_date BETWEEN '2025-01-01' AND '2025-12-31' THEN '2025全年'
+         WHEN order_date BETWEEN '2026-01-01' AND '2026-06-30' THEN '2026H1'
+    END AS period,
+    ROUND(SUM(amount),2) AS sales_amount
+FROM order_item WHERE pay_status='已支付'
+  AND order_date BETWEEN '2025-01-01' AND '2026-06-30'
+GROUP BY period ORDER BY period;` },
   { questionId: 'Q15', question: '五大一级品类2025年全年销售额对比', difficulty: '中等', questionType: '对比分析', baselineCorrect: true, experimentCorrect: true },
   { questionId: 'Q16', question: '一级品类中，销售额最高的Top3是哪些？（2025全年）', difficulty: '中等', questionType: '排名分析', baselineCorrect: true, experimentCorrect: true },
   { questionId: 'Q17', question: '2026年上半年订单量最多的前5个城市是哪些？', difficulty: '中等', questionType: '排名分析', baselineCorrect: true, experimentCorrect: true },
-  { questionId: 'Q18', question: '按区域来看，客单价最高的3个区域是？', difficulty: '中等', questionType: '排名分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '默认时间范围错误导致排名和数值均错' },
+  { questionId: 'Q18', question: '按区域来看，客单价最高的3个区域是？', difficulty: '中等', questionType: '排名分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '默认时间范围错误导致排名和数值均错',
+    baselineSql: `SELECT c.region, AVG(oi.amount) AS aov
+FROM order_item oi JOIN customer c ON oi.customer_id=c.customer_id
+GROUP BY c.region ORDER BY aov DESC LIMIT 3;`,
+    optimizedSql: `SELECT c.region,
+       ROUND(SUM(oi.amount)*1.0/NULLIF(COUNT(DISTINCT oi.order_id),0),2) AS aov
+FROM order_item oi LEFT JOIN customer c ON oi.customer_id=c.customer_id
+WHERE oi.pay_status='已支付' AND oi.order_date BETWEEN '2026-06-01' AND '2026-06-30'
+GROUP BY c.region ORDER BY aov DESC LIMIT 3;` },
   { questionId: 'Q19', question: '2025年新增付费客户数最多的10个城市', difficulty: '困难', questionType: '排名分析', baselineCorrect: true, experimentCorrect: true },
   { questionId: 'Q20', question: '2025年销售额最低的5个品牌', difficulty: '中等', questionType: '排名分析', baselineCorrect: true, experimentCorrect: true },
-  { questionId: 'Q21', question: '7大区域的销售额占比（上月）', difficulty: '中等', questionType: '占比分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '时间函数错误返回0行，且占比缺少绝对值列' },
-  { questionId: 'Q22', question: '2025年各渠道的订单量占比', difficulty: '中等', questionType: '占比分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '缺少绝对值列，占比计算错误' },
+  { questionId: 'Q21', question: '7大区域的销售额占比（上月）', difficulty: '中等', questionType: '占比分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '时间函数错误返回0行，且占比缺少绝对值列',
+    baselineSql: `SELECT c.region,
+       ROUND(SUM(oi.amount)*100.0/(SELECT SUM(amount) FROM order_item),2) AS share_pct
+FROM order_item oi INNER JOIN customer c ON oi.customer_id=c.customer_id
+WHERE strftime('%Y-%m', oi.order_date)=strftime('%Y-%m',date('now','-1 month'))
+GROUP BY c.region;`,
+    optimizedSql: `WITH total AS (SELECT SUM(amount) AS total FROM order_item
+    WHERE pay_status='已支付' AND order_date BETWEEN '2026-06-01' AND '2026-06-30')
+SELECT c.region, ROUND(SUM(oi.amount),2) AS sales_amount,
+       ROUND(SUM(oi.amount)*100.0/(SELECT total FROM total),2) AS share_pct
+FROM order_item oi LEFT JOIN customer c ON oi.customer_id=c.customer_id
+WHERE oi.pay_status='已支付' AND oi.order_date BETWEEN '2026-06-01' AND '2026-06-30'
+GROUP BY c.region ORDER BY sales_amount DESC;` },
+  { questionId: 'Q22', question: '2025年各渠道的订单量占比', difficulty: '中等', questionType: '占比分析', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '缺少绝对值列，占比计算错误',
+    baselineSql: `SELECT channel,
+       ROUND(COUNT(*)*100.0/(SELECT COUNT(*) FROM order_item),2) AS share_pct
+FROM order_item WHERE order_date BETWEEN '2025-01-01' AND '2025-12-31'
+GROUP BY channel;`,
+    optimizedSql: `WITH total AS (SELECT COUNT(DISTINCT order_id) AS total FROM order_item
+    WHERE pay_status='已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31')
+SELECT channel, COUNT(DISTINCT order_id) AS order_count,
+       ROUND(COUNT(DISTINCT order_id)*100.0/(SELECT total FROM total),2) AS share_pct
+FROM order_item WHERE pay_status='已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31'
+GROUP BY channel ORDER BY order_count DESC;` },
   { questionId: 'Q23', question: '电子产品一级品类下，5个二级子品类的销售额占比（2025全年）', difficulty: '中等', questionType: '占比分析', baselineCorrect: true, experimentCorrect: true },
   { questionId: 'Q24', question: '2025年哪个月的销售额环比上月跌幅最大？', difficulty: '困难', questionType: '异常识别', baselineCorrect: true, experimentCorrect: true },
-  { questionId: 'Q25', question: '2025年复购率最高和最低的月份分别是？', difficulty: '困难', questionType: '异常识别', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '复购率定义错误（跨月追踪新客），且只返回2行' },
+  { questionId: 'Q25', question: '2025年复购率最高和最低的月份分别是？', difficulty: '困难', questionType: '异常识别', baselineCorrect: false, experimentCorrect: true, baselineErrorReason: '复购率定义错误（跨月追踪新客），且只返回2行',
+    baselineSql: `WITH first_order AS (
+    SELECT customer_id, MIN(strftime('%Y-%m', order_date)) AS first_month
+    FROM order_item WHERE pay_status='已支付' GROUP BY customer_id
+), repurchase AS (
+    SELECT f.customer_id, f.first_month,
+           COUNT(DISTINCT strftime('%Y-%m', o.order_date)) AS active_month_cnt
+    FROM first_order f JOIN order_item o ON f.customer_id=o.customer_id
+    WHERE o.pay_status='已支付' AND strftime('%Y-%m', o.order_date) > f.first_month
+    GROUP BY f.customer_id, f.first_month
+)
+SELECT first_month,
+       ROUND(COUNT(DISTINCT customer_id)*100.0
+            / NULLIF((SELECT COUNT(DISTINCT customer_id) FROM first_order x WHERE x.first_month=repurchase.first_month),0),2) AS repurchase_rate_pct
+FROM repurchase GROUP BY first_month ORDER BY repurchase_rate_pct DESC LIMIT 2;`,
+    optimizedSql: `WITH monthly AS (
+    SELECT strftime('%Y-%m', order_date) AS month, customer_id, COUNT(DISTINCT order_id) AS cnt
+    FROM order_item WHERE pay_status='已支付' AND order_date BETWEEN '2025-01-01' AND '2025-12-31'
+    GROUP BY month, customer_id
+)
+SELECT month,
+       COUNT(DISTINCT customer_id) AS total_active_customers,
+       COUNT(DISTINCT CASE WHEN cnt>=2 THEN customer_id END) AS repurchase_customers,
+       ROUND(COUNT(DISTINCT CASE WHEN cnt>=2 THEN customer_id END)*100.0
+            / NULLIF(COUNT(DISTINCT customer_id),0),2) AS repurchase_rate_pct
+FROM monthly GROUP BY month ORDER BY month;` },
 ];
 
 // 快捷问题

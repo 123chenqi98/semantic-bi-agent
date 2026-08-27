@@ -114,4 +114,6 @@ export interface EvaluationResult {
   experimentCorrect: boolean;
   baselineErrorReason?: string;
   experimentErrorReason?: string;
+  baselineSql?: string;
+  optimizedSql?: string;
 }
