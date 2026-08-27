@@ -1,7 +1,11 @@
-import { Circle } from 'lucide-react';
+import { Circle, Menu } from 'lucide-react';
 import { useApp } from '../../store/ChatContext';
 
-export default function Header() {
+interface HeaderProps {
+  onToggleSidebar?: () => void;
+}
+
+export default function Header({ onToggleSidebar }: HeaderProps) {
   const { state } = useApp();
 
   const pageMeta: Record<string, { title: string; desc?: string }> = {
@@ -9,6 +13,7 @@ export default function Header() {
     chartAssistant: { title: '图表生成助手', desc: '上传 CSV / 粘贴数据，AI 智能推荐图表类型并生成可视化' },
     dictionary: { title: '指标语义词典', desc: '维护指标定义、口径规则与时间语义映射' },
     evaluation: { title: '实验评测中心', desc: '基线组 vs 实验组对照实验结果与逐题明细' },
+    semanticEditor: { title: '语义层管理', desc: '可视化编辑指标定义、SQL 模板、同义词与口径规则（localStorage 持久化）' },
     settings: { title: '系统设置', desc: '项目信息、技术栈与模型配置' },
   };
 
@@ -24,6 +29,24 @@ export default function Header() {
         justifyContent: isChat ? 'center' : 'space-between',
       }}
     >
+      <button
+        className="mobile-menu-btn"
+        onClick={onToggleSidebar}
+        aria-label="切换菜单"
+        style={{
+          display: 'none',
+          width: 36,
+          height: 36,
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderRadius: 4,
+          color: '#565960',
+          flexShrink: 0,
+          marginRight: 8,
+        }}
+      >
+        <Menu size={20} />
+      </button>
       {isChat ? (
         <>
           <div className="flex items-center gap-2.5">
@@ -57,7 +80,7 @@ export default function Header() {
         </>
       ) : (
         <>
-          <div className="flex flex-col">
+          <div className="flex flex-col" style={{ minWidth: 0 }}>
             <h1 className="text-[18px] font-semibold leading-tight" style={{ color: '#252931', letterSpacing: '-0.01em' }}>
               {meta.title}
             </h1>
@@ -66,7 +89,7 @@ export default function Header() {
             )}
           </div>
           <div
-            className="flex items-center gap-1.5 text-[12px]"
+            className="flex items-center gap-1.5 text-[12px] shrink-0"
             style={{ color: '#565960', background: '#FAFBFC', padding: '5px 10px', borderRadius: 100, border: '1px solid #F1F2F3' }}
           >
             <Circle size={6} style={{ color: '#00B42A', fill: '#00B42A' }} />

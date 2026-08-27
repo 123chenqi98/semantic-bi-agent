@@ -11,6 +11,16 @@ function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
+function buildHistory(messages: { type: string; content?: string; question?: string; sql?: string }[]): { role: string; content: string }[] {
+  return messages
+    .filter(m => m.type === 'user' || (m.type === 'ai' && (m.question || m.sql)))
+    .slice(-8)
+    .map(m => ({
+      role: m.type === 'user' ? 'user' : 'assistant',
+      content: m.type === 'user' ? (m.content || '') : `[之前生成的SQL] ${m.sql || ''}`,
+    }));
+}
+
 const SKILL_PREFIX_MAP: Record<string, SkillTag> = {
   '时间解析': 'time',
   'SQL优化': 'sql',
@@ -109,7 +119,62 @@ export default function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentConversation.messages, currentConversation.messages.length]);
 
-  const callBackendChat = async (question: string): Promise<Partial<AIMessageType> | null> => {
+  const streamBackendChat = async (
+    question: string,
+    onUpdate: (patch: Partial<AIMessageType>) => void,
+    history?: { role: string; content: string }[],
+  ): Promise<Partial<AIMessageType> | null> => {
+    if (disableBackend) return null;
+    try {
+      const resp = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, history: history || [] }),
+      });
+      if (!resp.ok || !resp.body) return null;
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let streamedSql = '';
+      let findings: string[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const evt of events) {
+          const eventMatch = evt.match(/^event:\s*(.+)$/m);
+          const dataMatch = evt.match(/^data:\s*(.+)$/m);
+          if (!eventMatch || !dataMatch) continue;
+          const eventName = eventMatch[1].trim();
+          try {
+            const data = JSON.parse(dataMatch[1]);
+            if (eventName === 'status') {
+              onUpdate({ streamingStatus: `${data.step}... ${data.detail || ''}` });
+            } else if (eventName === 'sql') {
+              streamedSql += data.chunk;
+              onUpdate({ sql: streamedSql, streamingStatus: '正在生成 SQL...' });
+            } else if (eventName === 'finding') {
+              findings = [...findings, data.text];
+              onUpdate({ summary: { key_findings: findings }, streamingStatus: '生成分析结论...' });
+            } else if (eventName === 'done') {
+              return data as AIMessageType;
+            }
+          } catch { /* skip parse error */ }
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  const callBackendChat = async (question: string, history?: { role: string; content: string }[]): Promise<Partial<AIMessageType> | null> => {
     if (disableBackend) return null;
     try {
       const ctrl = new AbortController();
@@ -117,7 +182,7 @@ export default function ChatPage() {
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question, history: history || [] }),
         signal: ctrl.signal,
       });
       clearTimeout(timer);
@@ -130,6 +195,8 @@ export default function ChatPage() {
         matchedDimensions: j.matchedDimensions,
         sql: j.sql ?? '',
         baselineSql: j.baselineSql,
+        baselinePrompt: j.baselinePrompt,
+        experimentPrompt: j.experimentPrompt,
         result: j.result,
         baselineResult: j.baselineResult,
         summary: j.summary ?? { key_findings: [] },
@@ -338,6 +405,7 @@ LEFT JOIN date_dim dd ON oi.order_date=dd.date WHERE oi.pay_status='已支付' G
 
   const handleSend = async (rawQuestion: string) => {
     const convId = currentConversation.id;
+    const history = buildHistory(currentConversation.messages);
     dispatch({ type: 'ADD_MESSAGE', payload: { conversationId: convId, message: { id: generateId(), type: 'user', content: rawQuestion, timestamp: Date.now() } } });
     dispatch({ type: 'SET_LOADING', payload: true });
     const aiId = generateId();
@@ -369,23 +437,27 @@ LEFT JOIN date_dim dd ON oi.order_date=dd.date WHERE oi.pay_status='已支付' G
 
     dispatch({ type: 'ADD_MESSAGE', payload: { conversationId: convId, message: { id: aiId, type: 'ai', question: questionForAI, matchedMetrics: [], sql: '', isLoading: true, timestamp: Date.now() } as AIMessageType } });
 
-    // 先尝试后端（真实 SQLite 执行），失败回退 Mock
+    // 先尝试后端 SSE 流式，失败回退普通 API，再失败走 Mock
     (async () => {
       let reply: Partial<AIMessageType> | null = null;
       try {
-        reply = await callBackendChat(questionForAI);
+        reply = await streamBackendChat(questionForAI, (patch) => {
+          dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId, updates: patch } });
+        }, history);
       } catch {
         reply = null;
       }
       if (!reply) {
-        // 小延迟模拟思考，然后走本地 Mock
+        try { reply = await callBackendChat(questionForAI, history); } catch { reply = null; }
+      }
+      if (!reply) {
         await new Promise(r => setTimeout(r, 400 + Math.random() * 500));
         reply = mockAIReply(questionForAI);
       }
       if (tags.length > 0) {
         reply = attachSkillEnhancements(reply, tags, questionForAI);
       }
-      dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId, updates: { ...reply, isLoading: false } as Partial<AIMessageType> } });
+      dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId, updates: { ...reply, isLoading: false, streamingStatus: undefined } as Partial<AIMessageType> } });
       dispatch({ type: 'SET_LOADING', payload: false });
     })();
   };

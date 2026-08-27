@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
-import { Upload, Sparkles, BarChart3, FileText, Lightbulb, TrendingUp } from 'lucide-react';
+import { Upload, Sparkles, BarChart3, FileText, Lightbulb, TrendingUp, Download } from 'lucide-react';
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -24,6 +24,40 @@ export default function ChartAssistantPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autoTriggeredRef = useRef(false);
+  const chartWrapperRef = useRef<HTMLDivElement>(null);
+
+  const handleExportPNG = () => {
+    const wrapper = chartWrapperRef.current;
+    if (!wrapper) return;
+    const svg = wrapper.querySelector('svg');
+    if (!svg) return;
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = () => {
+      const scale = 2;
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.fillStyle = currentStyle.id === 'high-contrast' ? '#1F2329' : '#FFFFFF';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(blob => {
+        if (!blob) return;
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `${fileName.replace(/\.csv$/i, '') || 'chart'}-${result?.chartType || 'chart'}.png`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }, 'image/png');
+    };
+    img.src = url;
+  };
 
   // 接收来自 @图表生成 / /chart 的预填数据
   useEffect(() => {
@@ -633,7 +667,20 @@ export default function ChartAssistantPage() {
               <div className="bg-white" style={{ border: '1px solid #ECEDF1', borderRadius: 4, overflow: 'hidden' }}>
                 <div style={{ padding: '16px 24px', borderBottom: '1px solid #F1F2F3', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <h3 className="text-[14px] font-semibold" style={{ color: '#252931' }}>图表结果</h3>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2" style={{ alignItems: 'center' }}>
+                    <button
+                      onClick={handleExportPNG}
+                      className="flex items-center gap-1 outline-none"
+                      style={{
+                        padding: '4px 10px', fontSize: 12, fontWeight: 500,
+                        border: '1px solid #D9BAF7', borderRadius: 4, background: '#FBF9FE', color: '#B758ED',
+                        cursor: 'pointer', transition: 'background .15s',
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.background = '#F5F0FF'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = '#FBF9FE'; }}
+                    >
+                      <Download size={12} /> 导出 PNG
+                    </button>
                     <span className="text-[12px]" style={{ background: '#F5F0FF', color: '#B758ED', padding: '3px 10px', borderRadius: 4, fontWeight: 500 }}>
                       {CHART_TYPES.find(t => t.id === result.chartType)?.label}
                     </span>
@@ -642,7 +689,7 @@ export default function ChartAssistantPage() {
                     </span>
                   </div>
                 </div>
-                <div style={{ padding: '16px 8px', background: currentStyle.id === 'high-contrast' ? '#1F2329' : '#FFFFFF' }}>
+                <div ref={chartWrapperRef} style={{ padding: '16px 8px', background: currentStyle.id === 'high-contrast' ? '#1F2329' : '#FFFFFF' }}>
                   {renderChart()}
                 </div>
                 <div style={{ padding: '20px 24px', borderTop: '1px solid #F1F2F3', display: 'flex', flexDirection: 'column', rowGap: 16 }}>

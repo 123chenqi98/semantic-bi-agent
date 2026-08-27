@@ -46,10 +46,18 @@ class BaselineText2SQL:
         self.schema_text = schema_text if schema_text is not None else load_schema()
         self.executor = SQLExecutor()
 
-    def build_prompt(self, question):
+    def build_prompt(self, question, history=None):
+        history_text = ""
+        if history:
+            lines = []
+            for h in history[-6:]:
+                role = h.get("role", "user")
+                content = h.get("content", "")
+                lines.append(f"[{role}] {content}")
+            history_text = "\n[对话历史（供参考，可能包含上文语境）]\n" + "\n".join(lines) + "\n"
         user_prompt = f"""[Database Schema]
 {self.schema_text}
-
+{history_text}
 [Natural Language Question]
 {question}
 
@@ -57,23 +65,27 @@ class BaselineText2SQL:
 """
         return user_prompt
 
-    def generate_sql(self, question, temperature=0):
+    def generate_sql(self, question, temperature=0, history=None):
         messages = [
             {"role": "system", "content": BASELINE_SYSTEM_PROMPT},
-            {"role": "user", "content": self.build_prompt(question)},
+            {"role": "user", "content": self.build_prompt(question, history=history)},
         ]
         raw_response = self.llm.chat(messages, temperature=temperature)
         sql = extract_sql_from_response(raw_response)
         return sql, raw_response
 
-    def run(self, question, execute=True, temperature=0):
+    def run(self, question, execute=True, temperature=0, history=None):
         """完整流程：生成SQL → 执行 → 返回结构化结果。"""
-        sql, raw = self.generate_sql(question, temperature=temperature)
+        sql, raw = self.generate_sql(question, temperature=temperature, history=history)
+        system_prompt = BASELINE_SYSTEM_PROMPT
+        user_prompt = self.build_prompt(question, history=history)
+        full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_prompt}"
         result = {
             "question": question,
             "generated_sql": sql,
             "raw_llm_response": raw,
             "exec_result": None,
+            "full_prompt": full_prompt,
         }
         if execute:
             result["exec_result"] = self.executor.execute(sql)

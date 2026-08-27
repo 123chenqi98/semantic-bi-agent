@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Sparkles, Lightbulb, BookOpen, Clock, Code2, AlertTriangle, HelpCircle, BarChart3, FlaskConical, Trash2, Zap, ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle } from 'lucide-react';
+import { Sparkles, Lightbulb, BookOpen, Clock, Code2, AlertTriangle, HelpCircle, BarChart3, FlaskConical, Trash2, Zap, ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, FileText } from 'lucide-react';
 import SQLBlock from '../common/SQLBlock';
 import SQLDiff from '../common/SQLDiff';
 import ResultTable from '../common/ResultTable';
@@ -133,7 +133,7 @@ export default function AIMessageCard({ message }: AIMessageCardProps) {
   const showBaseline = state.showBaselineCompare || forceShowBaseline;
   const [traceOpen, setTraceOpen] = useState(false);
 
-  if (message.isLoading) {
+  if (message.isLoading && !message.sql && !message.streamingStatus) {
     return (
       <div className="flex w-full" style={{ gap: 12, marginBottom: 40 }}>
         <div
@@ -201,6 +201,17 @@ export default function AIMessageCard({ message }: AIMessageCardProps) {
             ))}
           </div>
         ) : null}
+
+        {message.streamingStatus && (
+          <div className="flex items-center gap-2" style={{ marginBottom: 12, fontSize: 12, color: '#B758ED' }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%', background: '#B758ED',
+              animation: 'pulse 1s ease-in-out infinite',
+            }} />
+            <span>{message.streamingStatus}</span>
+            <span className="font-mono" style={{ animation: 'blink 1s step-end infinite' }}>▊</span>
+          </div>
+        )}
 
         {/* 词典卡片 */}
         {isDictOnly && message.dictResult && <DictCard metric={message.dictResult} />}
@@ -338,7 +349,82 @@ export default function AIMessageCard({ message }: AIMessageCardProps) {
             )}
           </div>
         )}
+
+        {(message.baselinePrompt || message.experimentPrompt) && (
+          <PromptViewer
+            baselinePrompt={message.baselinePrompt}
+            experimentPrompt={message.experimentPrompt}
+          />
+        )}
       </div>
+    </div>
+  );
+}
+
+function PromptViewer({ baselinePrompt, experimentPrompt }: { baselinePrompt?: string; experimentPrompt?: string }) {
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<'experiment' | 'baseline'>('experiment');
+  const activePrompt = tab === 'experiment' ? experimentPrompt : baselinePrompt;
+  const tokenEstimate = activePrompt ? Math.ceil(activePrompt.length / 3.5) : 0;
+
+  return (
+    <div style={{ marginTop: 12, border: '1px solid #ECEDF1', borderRadius: 4, overflow: 'hidden' }}>
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between text-left outline-none"
+        style={{ padding: '10px 14px', background: '#FBFCFD' }}
+      >
+        <div className="flex items-center gap-2">
+          <FileText size={14} style={{ color: '#B758ED' }} />
+          <span className="text-[13px] font-medium" style={{ color: '#252931' }}>查看完整 Prompt（发送给 LLM 的实际输入）</span>
+          {activePrompt && (
+            <span className="text-[11px]" style={{ color: '#898B8F', background: '#F5F6F8', padding: '1px 7px', borderRadius: 3 }}>
+              ≈ {tokenEstimate} tokens · {activePrompt.length.toLocaleString()} chars
+            </span>
+          )}
+        </div>
+        {open ? <ChevronDown size={14} style={{ color: '#898B8F' }} /> : <ChevronRight size={14} style={{ color: '#898B8F' }} />}
+      </button>
+      {open && (
+        <div>
+          <div style={{ display: 'flex', borderBottom: '1px solid #ECEDF1', background: '#FFFFFF' }}>
+            <button
+              onClick={() => setTab('experiment')}
+              className="outline-none"
+              style={{
+                padding: '8px 16px', fontSize: 12, fontWeight: 500,
+                color: tab === 'experiment' ? '#B758ED' : '#898B8F',
+                borderBottom: tab === 'experiment' ? '2px solid #B758ED' : '2px solid transparent',
+              }}
+            >
+              🧪 实验组 Prompt（含语义层）
+            </button>
+            <button
+              onClick={() => setTab('baseline')}
+              className="outline-none"
+              style={{
+                padding: '8px 16px', fontSize: 12, fontWeight: 500,
+                color: tab === 'baseline' ? '#F53F3F' : '#898B8F',
+                borderBottom: tab === 'baseline' ? '2px solid #F53F3F' : '2px solid transparent',
+              }}
+            >
+              ⚪ 基线 Prompt（仅 Schema）
+            </button>
+          </div>
+          <pre
+            style={{
+              margin: 0, padding: 16, maxHeight: 400, overflow: 'auto',
+              background: '#FAFBFC', fontSize: 12, lineHeight: 1.7,
+              fontFamily: 'var(--font-mono)', color: '#252931', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            }}
+          >
+            {activePrompt || '（无 Prompt 数据）'}
+          </pre>
+          <div style={{ padding: '8px 14px', background: '#FBFCFD', borderTop: '1px solid #F1F2F3', fontSize: 11, color: '#898B8F' }}>
+            💡 实验组 System Prompt 中注入了指标定义、口径规则、时间锚点映射、常见陷阱等语义知识；基线组仅提供 DDL Schema，这是准确率差异的根本原因。
+          </div>
+        </div>
+      )}
     </div>
   );
 }

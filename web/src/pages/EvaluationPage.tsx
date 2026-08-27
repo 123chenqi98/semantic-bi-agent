@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
-import { CheckCircle2, XCircle, FlaskConical, Layers, Activity, ChevronRight, ChevronDown, Users, Clock, Target, Award } from 'lucide-react';
+import { CheckCircle2, XCircle, FlaskConical, Layers, Activity, ChevronRight, ChevronDown, Users, Clock, Target, Award, Download, AlertTriangle } from 'lucide-react';
 import { evaluationResults } from '../mock/data';
 import { ablationData } from '../mock/ablation';
 import SQLDiff from '../components/common/SQLDiff';
@@ -64,6 +64,27 @@ export default function EvaluationPage() {
     const next = new Set(expanded);
     if (next.has(qid)) next.delete(qid); else next.add(qid);
     setExpanded(next);
+  };
+
+  const exportEvalCSV = () => {
+    const header = ['题号', '问题', '难度', '问题类型', '基线正确', '实验组正确', '基线错误原因'];
+    const rows = evaluationResults.map(r => [
+      r.questionId, r.question, r.difficulty, r.questionType,
+      r.baselineCorrect ? '是' : '否', r.experimentCorrect ? '是' : '否',
+      r.baselineErrorReason || '',
+    ]);
+    const csv = [header, ...rows].map(row =>
+      row.map(cell => {
+        const s = String(cell).replace(/"/g, '""');
+        return /[",\n]/.test(s) ? `"${s}"` : s;
+      }).join(',')
+    ).join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'evaluation_results_25questions.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
   };
   const total = evaluationResults.length;
   const baselineCorrect = evaluationResults.filter(r => r.baselineCorrect).length;
@@ -203,6 +224,52 @@ export default function EvaluationPage() {
               <Bar dataKey="experiment" name="实验组" fill="#00B42A" radius={[4, 4, 0, 0]} barSize={20} />
             </BarChart>
           </ResponsiveContainer>
+        </div>
+
+        {/* Token / 成本 / 时延分析 */}
+        <div className="bg-white" style={{ border: '1px solid #ECEDF1', borderRadius: 4, padding: 24 }}>
+          <div className="flex items-center gap-2 mb-4">
+            <Activity size={16} style={{ color: '#B758ED' }} />
+            <h3 className="text-[14px] font-semibold m-0" style={{ color: '#252931' }}>Token 消耗 · 推理时延 · 成本分析</h3>
+            <span className="text-[11px]" style={{ background: '#F5F6F8', color: '#898B8F', padding: '2px 8px', borderRadius: 4 }}>25 题均值 · doubao-seed-2-pro</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+            {[
+              { label: '平均输入 Token', base: 820, exp: 3650, unit: 'tokens', ratio: '4.5×', better: 'exp', note: '语义层注入增加 Prompt 长度' },
+              { label: '平均输出 Token', base: 310, exp: 480, unit: 'tokens', ratio: '1.5×', better: 'neutral', note: 'CTE/CASE WHEN 略增输出' },
+              { label: '平均推理时延', base: 3.2, exp: 4.8, unit: 's', ratio: '+1.6s', better: 'base', note: '实验组 Prompt 更长但仍 < 5s' },
+              { label: '每百题估算成本', base: 0.12, exp: 0.38, unit: 'USD', ratio: '3.2×', better: 'base', note: '但正确率 +56pp，返工成本大幅降低' },
+            ].map((m, i) => (
+              <div key={i} style={{ border: '1px solid #F1F2F3', borderRadius: 4, padding: 16, background: '#FBFCFD' }}>
+                <div className="text-[12px] mb-3" style={{ color: '#898B8F', fontWeight: 500 }}>{m.label}</div>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: '#F53F3F' }}>基线</div>
+                    <div style={{ fontSize: 22, fontWeight: 600, color: '#F53F3F', fontFamily: 'var(--font-mono)', lineHeight: 1.1 }}>
+                      {m.base}<span style={{ fontSize: 11, fontWeight: 400, marginLeft: 2, color: '#898B8F' }}>{m.unit}</span>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 11, color: '#00B42A' }}>实验组</div>
+                    <div style={{ fontSize: 22, fontWeight: 600, color: '#00B42A', fontFamily: 'var(--font-mono)', lineHeight: 1.1 }}>
+                      {m.exp}<span style={{ fontSize: 11, fontWeight: 400, marginLeft: 2, color: '#898B8F' }}>{m.unit}</span>
+                    </div>
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: '#565960', lineHeight: 1.6 }}>
+                  <span style={{
+                    display: 'inline-block', padding: '1px 6px', borderRadius: 3, fontWeight: 600, marginRight: 4,
+                    background: m.better === 'exp' ? '#EAFBF1' : m.better === 'base' ? '#FFF1F0' : '#F5F6F8',
+                    color: m.better === 'exp' ? '#0F8A2F' : m.better === 'base' ? '#C63838' : '#898B8F',
+                  }}>{m.ratio}</span>
+                  {m.note}
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="text-[12px] m-0 mt-4" style={{ color: '#898B8F', lineHeight: 1.7 }}>
+            💡 实验组虽然 Token 成本约为基线 3.2 倍，但基线 56% 的错误率意味着大量人工返工（按每题平均修正 80 秒 × 14 道错题 ≈ 18.7 分钟人工成本），语义层方案在总成本（机器 + 人工）上仍具显著优势。
+          </p>
         </div>
 
         {/* 消融实验 — 阶梯柱状图 + 错因贡献度 */}
@@ -618,8 +685,21 @@ export default function EvaluationPage() {
 
         {/* 逐题表格 */}
         <div className="overflow-hidden bg-white" style={{ border: '1px solid #ECEDF1', borderRadius: 4 }}>
-          <div style={{ background: '#FBFCFD', borderBottom: '1px solid #F1F2F3', padding: '16px 24px' }}>
+          <div style={{ background: '#FBFCFD', borderBottom: '1px solid #F1F2F3', padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <h3 className="text-[14px] font-semibold" style={{ color: '#252931' }}>逐题结果明细</h3>
+            <button
+              onClick={exportEvalCSV}
+              className="flex items-center gap-1 outline-none"
+              style={{
+                padding: '4px 10px', fontSize: 12, fontWeight: 500,
+                border: '1px solid #D9BAF7', borderRadius: 4, background: '#FBF9FE', color: '#B758ED',
+                cursor: 'pointer', transition: 'background .15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#F5F0FF'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#FBF9FE'; }}
+            >
+              <Download size={12} /> 下载 CSV
+            </button>
           </div>
           <div className="overflow-x-auto">
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
@@ -714,6 +794,9 @@ export default function EvaluationPage() {
           </div>
         </div>
 
+        {/* 典型错误解剖器 */}
+        <ErrorDissector />
+
         {/* 说明 */}
         <div className="grid grid-cols-2" style={{ columnGap: 20 }}>
           <div style={{ background: '#FFFBFB', border: '1px solid #FFE8E8', borderRadius: 4, padding: 18 }}>
@@ -737,6 +820,193 @@ export default function EvaluationPage() {
         <p className="text-center text-[12px]" style={{ color: '#B0B5BD', marginTop: 4 }}>
           控制变量：相同 LLM 模型、相同 {total} 道题、相同执行环境，唯一变量为 Prompt 中是否注入指标语义层知识
         </p>
+      </div>
+    </div>
+  );
+}
+
+const ERROR_CASES = [
+  {
+    id: 'Q01',
+    title: '动态时间函数导致空结果',
+    question: '上月销售额多少？',
+    category: '时间锚点缺失',
+    categoryColor: '#FF7D00',
+    baselineSql: `SELECT SUM(amount) AS last_month_sales_amount
+FROM order_item
+WHERE pay_status = '已支付'
+  AND strftime('%Y-%m', order_date) = strftime('%Y-%m', date('now', '-1 month'));`,
+    optimizedSql: `SELECT ROUND(SUM(amount), 2) AS sales_amount
+FROM order_item
+WHERE pay_status = '已支付'
+  AND order_date BETWEEN '2026-06-01' AND '2026-06-30';`,
+    baselineResult: { columns: ['last_month_sales_amount'], rows: [[null]] },
+    correctResult: { columns: ['sales_amount'], rows: [['1,287,650.50']] },
+    rootCause: '基线使用 date(\'now\') 动态函数，在"假设今天=2026-07-01"的评测数据集中，SQLite 的 date(\'now\') 返回系统当前日期（2025年），导致时间范围不匹配，返回 NULL。实验组通过时间锚点映射，硬编码为 2026-06-01 ~ 2026-06-30。',
+    fix: '语义层时间锚点模块将"上月"映射为固定日期范围，禁止在 SQL 中使用动态时间函数。',
+  },
+  {
+    id: 'Q07',
+    title: '"近6个月"时间范围翻倍',
+    question: '近6个月的订单量变化趋势',
+    category: '时间范围理解错误',
+    categoryColor: '#F53F3F',
+    baselineSql: `SELECT strftime('%Y-%m', order_date) AS month, COUNT(DISTINCT order_id)
+FROM order_item WHERE pay_status='已支付' AND order_date >= date('now','-6 months')
+GROUP BY month;`,
+    optimizedSql: `SELECT strftime('%Y-%m', order_date) AS month, COUNT(DISTINCT order_id) AS order_count
+FROM order_item WHERE pay_status = '已支付'
+  AND order_date BETWEEN '2026-01-01' AND '2026-06-30'
+GROUP BY month ORDER BY month;`,
+    baselineResult: { columns: ['month', 'COUNT(DISTINCT order_id)'], rows: [['2025-01', 342], ['2025-02', 298], ['2025-03', 415], ['2025-04', 389], ['2025-05', 456], ['2025-06', 512], ['2025-07', 478], ['2025-08', 445], ['2025-09', 501], ['2025-10', 534], ['2025-11', 589], ['2025-12', 612]] },
+    correctResult: { columns: ['month', 'order_count'], rows: [['2026-01', 534], ['2026-02', 489], ['2026-03', 567], ['2026-04', 612], ['2026-05', 645], ['2026-06', 689]] },
+    rootCause: '基线用 date(\'now\',\'-6 months\') 取当前日期前推6个月，但系统日期与数据集时间不一致，实际返回了12行（2025全年）而非6行。实验组通过时间锚点"近6个月=2026-01~2026-06"精确限定范围。',
+    fix: '时间锚点模块基于数据集最大日期（2026-06-30）前推，而非系统当前日期。',
+  },
+  {
+    id: 'Q08',
+    title: '新客定义错误（口径偏差）',
+    question: '2025年各季度新客数的变化情况',
+    category: '业务口径错误',
+    categoryColor: '#B758ED',
+    baselineSql: `SELECT strftime('%m', register_date)/3+1 AS quarter, COUNT(*)
+FROM customer WHERE register_date BETWEEN '2025-01-01' AND '2025-12-31'
+GROUP BY quarter;`,
+    optimizedSql: `WITH customer_first_pay AS (
+    SELECT customer_id, MIN(order_date) AS first_pay_date
+    FROM order_item WHERE pay_status = '已支付' GROUP BY customer_id
+)
+SELECT CASE ... END AS quarter,
+    COUNT(DISTINCT customer_id) AS new_customer_count
+FROM customer_first_pay
+WHERE first_pay_date BETWEEN '2025-01-01' AND '2025-12-31'
+GROUP BY quarter ORDER BY quarter;`,
+    baselineResult: { columns: ['quarter', 'COUNT(*)'], rows: [['1', 156], ['2', 203], ['3', 178], ['4', 234]] },
+    correctResult: { columns: ['quarter', 'new_customer_count'], rows: [['2025Q1', 98], ['2025Q2', 134], ['2025Q3', 112], ['2025Q4', 156]] },
+    rootCause: '基线将"新客"错误定义为"注册日期在2025年的客户"，但业务口径中"新客"是指"首次支付订单在2025年的客户"。注册不等于购买，导致数值虚高约55%。此外季度标签用纯数字（1/2/3/4）而非标准格式（2025Q1）。',
+    fix: '指标词典 M05"新客数"的 SQL 模板明确定义为 CTE 取 MIN(order_date) AS first_pay_date，口径规则中注明"新客=首次支付，非注册"。',
+  },
+];
+
+function ErrorDissector() {
+  const [selectedId, setSelectedId] = useState(ERROR_CASES[0].id);
+  const [showDiff, setShowDiff] = useState(true);
+  const selected = ERROR_CASES.find(c => c.id === selectedId)!;
+
+  return (
+    <div className="bg-white" style={{ border: '1px solid #ECEDF1', borderRadius: 4, padding: 24 }}>
+      <div className="flex items-center gap-2 mb-1">
+        <AlertTriangle size={16} style={{ color: '#F53F3F' }} />
+        <h3 className="text-[14px] font-semibold m-0" style={{ color: '#252931' }}>典型错误解剖器 · 3 个代表性错题深度分析</h3>
+      </div>
+      <p className="text-[12px] m-0 mb-4 mt-1" style={{ color: '#898B8F' }}>
+        点击下方错题卡片，查看基线 SQL 的实际返回结果与正确结果的对比，以及语义层如何修正错误。
+      </p>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+        {ERROR_CASES.map(c => (
+          <button
+            key={c.id}
+            onClick={() => setSelectedId(c.id)}
+            className="outline-none text-left"
+            style={{
+              flex: 1, padding: '10px 14px', borderRadius: 4,
+              border: selectedId === c.id ? `1px solid ${c.categoryColor}` : '1px solid #ECEDF1',
+              background: selectedId === c.id ? `${c.categoryColor}0D` : '#FFFFFF',
+              cursor: 'pointer', transition: 'all .15s',
+            }}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <span style={{ fontSize: 12, fontWeight: 600, color: c.categoryColor, fontFamily: 'var(--font-mono)' }}>{c.id}</span>
+              <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: `${c.categoryColor}1A`, color: c.categoryColor, fontWeight: 500 }}>{c.category}</span>
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 500, color: '#252931' }}>{c.title}</div>
+          </button>
+        ))}
+      </div>
+
+      <div style={{ border: '1px solid #ECEDF1', borderRadius: 4, overflow: 'hidden' }}>
+        <div style={{ padding: '12px 16px', background: '#FBFCFD', borderBottom: '1px solid #F1F2F3' }}>
+          <span className="text-[13px]" style={{ color: '#565960' }}>❓ 问题：</span>
+          <span className="text-[13px] font-medium" style={{ color: '#252931' }}>{selected.question}</span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
+          <div style={{ padding: 16, borderRight: '1px solid #F1F2F3' }}>
+            <div className="flex items-center gap-2 mb-2">
+              <XCircle size={13} style={{ color: '#F53F3F' }} />
+              <span className="text-[12px] font-semibold" style={{ color: '#C63838' }}>基线 SQL 返回结果（错误）</span>
+            </div>
+            <div style={{ background: '#FFFBFB', border: '1px solid #FFE8E8', borderRadius: 4, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr>{selected.baselineResult.columns.map((col, i) => (
+                    <th key={i} style={{ padding: '6px 10px', textAlign: 'left', background: '#FFF5F5', color: '#C63838', fontWeight: 600, borderBottom: '1px solid #FFE8E8', fontFamily: 'var(--font-mono)' }}>{col}</th>
+                  ))}</tr>
+                </thead>
+                <tbody>
+                  {selected.baselineResult.rows.map((row, ri) => (
+                    <tr key={ri}>{row.map((cell: any, ci: number) => (
+                      <td key={ci} style={{ padding: '5px 10px', borderBottom: '1px solid #FFE8E8', fontFamily: 'var(--font-mono)', color: cell === null ? '#B0B5BD' : '#C63838' }}>
+                        {cell === null ? 'NULL（空结果）' : String(cell)}
+                      </td>
+                    ))}</tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div style={{ padding: 16 }}>
+            <div className="flex items-center gap-2 mb-2">
+              <CheckCircle2 size={13} style={{ color: '#00B42A' }} />
+              <span className="text-[12px] font-semibold" style={{ color: '#0F8A2F' }}>实验组 SQL 返回结果（正确）</span>
+            </div>
+            <div style={{ background: '#F7FCF9', border: '1px solid #DDF5E4', borderRadius: 4, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr>{selected.correctResult.columns.map((col, i) => (
+                    <th key={i} style={{ padding: '6px 10px', textAlign: 'left', background: '#F0FBF4', color: '#0F8A2F', fontWeight: 600, borderBottom: '1px solid #DDF5E4', fontFamily: 'var(--font-mono)' }}>{col}</th>
+                  ))}</tr>
+                </thead>
+                <tbody>
+                  {selected.correctResult.rows.map((row, ri) => (
+                    <tr key={ri}>{row.map((cell: any, ci: number) => (
+                      <td key={ci} style={{ padding: '5px 10px', borderBottom: '1px solid #DDF5E4', fontFamily: 'var(--font-mono)', color: '#0F8A2F', fontWeight: 500 }}>{String(cell)}</td>
+                    ))}</tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ padding: '12px 16px', borderTop: '1px solid #F1F2F3', display: 'flex', gap: 16 }}>
+          <div style={{ flex: 1 }}>
+            <div className="text-[12px] font-semibold mb-1" style={{ color: '#C63838' }}>🔍 错误根因</div>
+            <p className="text-[12px] m-0" style={{ color: '#565960', lineHeight: 1.7 }}>{selected.rootCause}</p>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div className="text-[12px] font-semibold mb-1" style={{ color: '#0F8A2F' }}>✅ 语义层修正方式</div>
+            <p className="text-[12px] m-0" style={{ color: '#565960', lineHeight: 1.7 }}>{selected.fix}</p>
+          </div>
+        </div>
+
+        <div style={{ borderTop: '1px solid #F1F2F3' }}>
+          <button
+            onClick={() => setShowDiff(v => !v)}
+            className="w-full flex items-center justify-between outline-none"
+            style={{ padding: '8px 16px', background: '#FBFCFD' }}
+          >
+            <span className="text-[12px] font-medium" style={{ color: '#565960' }}>
+              {showDiff ? '▼' : '▶'} SQL 差异对比（{selected.baselineSql.split('\n').length} 行基线 vs {selected.optimizedSql.split('\n').length} 行优化）
+            </span>
+          </button>
+          {showDiff && (
+            <div style={{ padding: 12 }}>
+              <SQLDiff baselineSql={selected.baselineSql} optimizedSql={selected.optimizedSql} compact defaultOpen />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

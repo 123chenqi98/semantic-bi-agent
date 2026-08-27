@@ -80,6 +80,9 @@ export interface AIMessage {
   isHelp?: boolean;
   pipelineTrace?: PipelineTrace;
   baselineResult?: QueryResult;
+  baselinePrompt?: string;
+  experimentPrompt?: string;
+  streamingStatus?: string;
 }
 
 // 用户消息
@@ -102,7 +105,7 @@ export interface Conversation {
 }
 
 // 导航页面类型
-export type PageType = 'chat' | 'chartAssistant' | 'dictionary' | 'evaluation' | 'settings';
+export type PageType = 'chat' | 'chartAssistant' | 'dictionary' | 'evaluation' | 'settings' | 'semanticEditor';
 
 // 实验评测结果
 export interface EvaluationResult {

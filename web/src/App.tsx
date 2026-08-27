@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { AppProvider, useApp } from './store/ChatContext';
 import Sidebar from './components/Layout/Sidebar';
 import Header from './components/Layout/Header';
@@ -6,9 +7,11 @@ import ChartAssistantPage from './pages/ChartAssistantPage';
 import DictionaryPage from './pages/DictionaryPage';
 import EvaluationPage from './pages/EvaluationPage';
 import SettingsPage from './pages/SettingsPage';
+import SemanticEditorPage from './pages/SemanticEditorPage';
 
 function AppContent() {
   const { state } = useApp();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const renderPage = () => {
     switch (state.currentPage) {
@@ -17,15 +20,24 @@ function AppContent() {
       case 'dictionary': return <DictionaryPage />;
       case 'evaluation': return <EvaluationPage />;
       case 'settings': return <SettingsPage />;
+      case 'semanticEditor': return <SemanticEditorPage />;
       default: return <ChatPage />;
     }
   };
 
   return (
     <div className="flex h-screen w-screen overflow-hidden" style={{ background: '#F9FAFD' }}>
-      <Sidebar />
+      {sidebarOpen && (
+        <div
+          className="mobile-backdrop"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      <div className={`sidebar-wrapper ${sidebarOpen ? 'sidebar-open' : ''}`}>
+        <Sidebar onNavigate={() => setSidebarOpen(false)} />
+      </div>
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        <Header />
+        <Header onToggleSidebar={() => setSidebarOpen(v => !v)} />
         {renderPage()}
       </div>
     </div>

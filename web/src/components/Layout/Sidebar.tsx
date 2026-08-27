@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { MessageSquare, BookOpen, FlaskConical, Settings, Plus, Trash2, ChevronDown, ExternalLink, BarChart3 } from 'lucide-react';
+import { MessageSquare, BookOpen, FlaskConical, Settings, Plus, Trash2, ChevronDown, ExternalLink, BarChart3, SlidersHorizontal } from 'lucide-react';
 import { useApp } from '../../store/ChatContext';
 import type { PageType } from '../../types';
 
@@ -7,11 +7,16 @@ const navItems: { id: PageType; label: string; icon: React.ReactNode }[] = [
   { id: 'chat', label: 'AI 对话', icon: <MessageSquare size={16} /> },
   { id: 'chartAssistant', label: '图表生成', icon: <BarChart3 size={16} /> },
   { id: 'dictionary', label: '指标词典', icon: <BookOpen size={16} /> },
+  { id: 'semanticEditor', label: '语义层管理', icon: <SlidersHorizontal size={16} /> },
   { id: 'evaluation', label: '实验评测', icon: <FlaskConical size={16} /> },
   { id: 'settings', label: '系统设置', icon: <Settings size={16} /> },
 ];
 
-export default function Sidebar() {
+interface SidebarProps {
+  onNavigate?: () => void;
+}
+
+export default function Sidebar({ onNavigate }: SidebarProps) {
   const { state, dispatch, currentConversation } = useApp();
   const [showHistory, setShowHistory] = useState(true);
 
@@ -88,6 +93,7 @@ export default function Sidebar() {
                 if (item.id === 'chat' && chatConversations.length > 0) {
                   dispatch({ type: 'SELECT_CONVERSATION', payload: chatConversations[0].id });
                 }
+                onNavigate?.();
               }}
               className="w-full flex items-center gap-2.5 text-[14px] relative outline-none"
               style={{
@@ -150,7 +156,7 @@ export default function Sidebar() {
                 return (
                   <div
                     key={conv.id}
-                    onClick={() => dispatch({ type: 'SELECT_CONVERSATION', payload: conv.id })}
+                    onClick={() => { dispatch({ type: 'SELECT_CONVERSATION', payload: conv.id }); onNavigate?.(); }}
                     className="group flex items-center gap-2 text-[13px] cursor-pointer transition-colors overflow-hidden relative"
                     style={{
                       height: 34,

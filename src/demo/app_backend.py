@@ -18,7 +18,7 @@ import re
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 
 from src.utils.sql_executor import SQLExecutor
@@ -473,24 +473,17 @@ def api_dict(metric_id_or_alias):
     })
 
 
-@app.route("/api/chat", methods=["POST"])
-def api_chat():
-    """全链路问数接口（推荐前端调用）
-    请求 JSON: { question: str, force_baseline: bool? }
-    返回前端 AIMessage 的结构：matchedMetrics/timeRange/result/sql/baselineSql/summary/pipelineTrace
-    """
-    body = request.get_json(silent=True) or {}
-    question = (body.get("question") or "").strip()
-    if not question:
-        return jsonify({"error": "问题不能为空"}), 400
-
+def _build_chat_response(question: str, history=None) -> dict:
+    """构建聊天响应的核心逻辑，供 /api/chat 和 /api/chat/stream 共用。"""
     t_start = time.time()
+    experiment_prompt = ""
+    history = history or []
 
     # ---- 路径 1：真实 LLM ----
     if real_llm_enabled:
         try:
             t_b = time.time()
-            b_res = baseline_system.run(question, execute=True)
+            b_res = baseline_system.run(question, execute=True, history=history)
             baseline_block = {
                 "sql": b_res.get("generated_sql", ""),
                 "success": (b_res.get("exec_result") or {}).get("success", False),
@@ -499,6 +492,7 @@ def api_chat():
                 "row_count": (b_res.get("exec_result") or {}).get("row_count", 0),
                 "time_ms": round((time.time() - t_b) * 1000, 1),
                 "error": (b_res.get("exec_result") or {}).get("error"),
+                "prompt": b_res.get("full_prompt", ""),
             }
         except Exception as e:
             baseline_block = {"sql": f"[错误] {e}", "success": False, "columns": [], "rows": [],
@@ -506,7 +500,7 @@ def api_chat():
 
         try:
             t_e = time.time()
-            e_res = experiment_system.run(question, execute=True)
+            e_res = experiment_system.run(question, execute=True, history=history)
             sql = e_res.get("generated_sql", "")
             exec_result = e_res.get("exec_result") or {}
             exp_ok = exec_result.get("success", False)
@@ -514,6 +508,7 @@ def api_chat():
             exp_rows = [list(r) for r in exec_result.get("rows", [])][:50]
             exp_time = round((time.time() - t_e) * 1000, 1)
             exp_err = exec_result.get("error")
+            experiment_prompt = e_res.get("full_prompt", "")
             matched_ids = e_res.get("matched_metrics") or semantic.match_metrics(question)
             matched_metrics = [(mid, semantic.metrics.get(mid, {}).get("name", mid)) for mid in matched_ids]
             # 真实LLM也套用 Mock 题库的元数据（时间范围/维度/错误纠正/发现）来让前端显示更丰富
@@ -525,6 +520,7 @@ def api_chat():
             exp_ok = False
             exp_cols, exp_rows, exp_err = [], [], str(e)
             exp_time = 0
+            experiment_prompt = ""
             matched_ids = semantic.match_metrics(question)
             matched_metrics = [(mid, semantic.metrics.get(mid, {}).get("name", mid)) for mid in matched_ids]
             matched_item = _match_mock_bank(question)
@@ -567,6 +563,15 @@ def api_chat():
             time_detected = "问题未匹配到内置题库 → 兜底取上月销售额"
         exp_time = round((time.time() - t_e) * 1000, 1)
 
+        # Mock 模式构造展示用 Prompt
+        from src.agent.baseline_text2sql import BASELINE_SYSTEM_PROMPT, load_schema
+        _schema = load_schema()
+        _baseline_user = f"[Database Schema]\n{_schema}\n\n[Natural Language Question]\n{question}\n\n[Generate SQL now]\n"
+        baseline_block["prompt"] = f"[System]\n{BASELINE_SYSTEM_PROMPT}\n\n[User]\n{_baseline_user}"
+        _exp_sys = semantic.build_system_prompt()
+        _exp_user = f"[自然语言问题]\n{question}\n\n[请生成SQL]\n"
+        experiment_prompt = f"[System]\n{_exp_sys}\n\n[User]\n{_exp_user}"
+
     # ---- 构造前端可直接消费的 AIMessage 字段 ----
     rules_applied, errors_corrected = _derive_rules_and_corrections(question, matched_item)
 
@@ -608,7 +613,7 @@ def api_chat():
         mock_mode,
     )
 
-    return jsonify({
+    return {
         "question": question,
         "matchedMetrics": [
             {"id": mid, "name": mname} for (mid, mname) in (matched_metrics or [])
@@ -617,6 +622,8 @@ def api_chat():
         "matchedDimensions": dimensions,
         "sql": sql,
         "baselineSql": baseline_block.get("sql"),
+        "baselinePrompt": baseline_block.get("prompt", ""),
+        "experimentPrompt": experiment_prompt,
         "result": {
             "columns": exp_cols,
             "rows": exp_rows,
@@ -640,6 +647,130 @@ def api_chat():
             "real_llm_enabled": real_llm_enabled,
             "elapsed_ms": round((time.time() - t_start) * 1000, 1),
         },
+    }
+
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    """全链路问数接口（非流式）。"""
+    body = request.get_json(silent=True) or {}
+    question = (body.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "问题不能为空"}), 400
+    history = body.get("history") or []
+    return jsonify(_build_chat_response(question, history=history))
+
+
+@app.route("/api/chat/stream", methods=["POST"])
+def api_chat_stream():
+    """SSE 流式问数接口：逐步发送状态、SQL 片段，最后发送完整 JSON。"""
+    import json as _json
+    body = request.get_json(silent=True) or {}
+    question = (body.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "问题不能为空"}), 400
+    history = body.get("history") or []
+
+    def generate():
+        yield f"event: status\ndata: {_json.dumps({'step': '理解问题', 'detail': question[:50]}, ensure_ascii=False)}\n\n"
+        time.sleep(0.15)
+
+        full = _build_chat_response(question, history=history)
+
+        yield f"event: status\ndata: {_json.dumps({'step': '匹配指标语义', 'detail': ', '.join(m['name'] for m in full.get('matchedMetrics', [])) or '无'}, ensure_ascii=False)}\n\n"
+        time.sleep(0.15)
+
+        yield f"event: status\ndata: {_json.dumps({'step': '时间锚点解析', 'detail': full.get('timeRange', '')}, ensure_ascii=False)}\n\n"
+        time.sleep(0.15)
+
+        sql_text = full.get("sql", "")
+        chunk_size = 12
+        for i in range(0, len(sql_text), chunk_size):
+            chunk = sql_text[i:i+chunk_size]
+            yield f"event: sql\ndata: {_json.dumps({'chunk': chunk}, ensure_ascii=False)}\n\n"
+            time.sleep(0.02)
+
+        yield f"event: status\ndata: {_json.dumps({'step': '执行 SQL 查询', 'detail': '返回 ' + str(full['result']['rowCount']) + ' 行'}, ensure_ascii=False)}\n\n"
+        time.sleep(0.2)
+
+        findings = full.get("summary", {}).get("key_findings", [])
+        for finding in findings:
+            yield f"event: finding\ndata: {_json.dumps({'text': finding}, ensure_ascii=False)}\n\n"
+            time.sleep(0.12)
+
+        yield f"event: done\ndata: {_json.dumps(full, ensure_ascii=False)}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.route("/api/db-health", methods=["GET"])
+def api_db_health():
+    """数据集健康度：表行数、NULL率、时间范围、品类分布。"""
+    tables = ["order_item", "customer", "product", "date_dim"]
+    table_stats = []
+    for t in tables:
+        try:
+            cnt = executor.execute(f"SELECT COUNT(*) FROM {t}")
+            row_count = cnt["rows"][0][0] if cnt["success"] else 0
+            table_stats.append({"name": t, "rowCount": row_count})
+        except Exception:
+            table_stats.append({"name": t, "rowCount": 0})
+
+    date_range = {"min": "", "max": ""}
+    try:
+        dr = executor.execute("SELECT MIN(order_date), MAX(order_date) FROM order_item")
+        if dr["success"] and dr["rows"]:
+            date_range = {"min": dr["rows"][0][0], "max": dr["rows"][0][1]}
+    except Exception:
+        pass
+
+    null_checks = []
+    for col in ["amount", "channel", "order_date", "customer_id", "product_id"]:
+        try:
+            r = executor.execute(f"SELECT COUNT(*) FROM order_item WHERE {col} IS NULL")
+            null_count = r["rows"][0][0] if r["success"] else 0
+            null_checks.append({"column": col, "nullCount": null_count})
+        except Exception:
+            null_checks.append({"column": col, "nullCount": -1})
+
+    category_dist = []
+    try:
+        cd = executor.execute("SELECT p.category, COUNT(*) FROM order_item oi JOIN product p ON oi.product_id=p.product_id GROUP BY p.category ORDER BY COUNT(*) DESC")
+        if cd["success"]:
+            category_dist = [{"name": row[0], "count": row[1]} for row in cd["rows"]]
+    except Exception:
+        pass
+
+    channel_dist = []
+    try:
+        ch = executor.execute("SELECT channel, COUNT(*) FROM order_item GROUP BY channel ORDER BY COUNT(*) DESC")
+        if ch["success"]:
+            channel_dist = [{"name": row[0], "count": row[1]} for row in ch["rows"]]
+    except Exception:
+        pass
+
+    total_rows = sum(t["rowCount"] for t in table_stats)
+    total_nulls = sum(n["nullCount"] for n in null_checks if n["nullCount"] > 0)
+    health_score = 100
+    if total_rows > 0:
+        health_score = max(0, 100 - int((total_nulls / total_rows) * 1000))
+
+    return jsonify({
+        "tables": table_stats,
+        "dateRange": date_range,
+        "nullChecks": null_checks,
+        "categoryDistribution": category_dist,
+        "channelDistribution": channel_dist,
+        "healthScore": health_score,
+        "totalRows": total_rows,
     })
 
 
