@@ -1,3 +1,15 @@
+---
+title: Semantic BI Agent
+emoji: 📊
+colorFrom: purple
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+short_description: 基于指标语义约束层的 Text-to-SQL 智能经营分析 Agent
+---
+
 # 面向经营分析场景的指标语义约束智能分析 Agent 设计与实现
 
 ## 📖 项目概述
