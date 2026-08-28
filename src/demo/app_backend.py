@@ -18,11 +18,12 @@ import re
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
-from flask import Flask, request, jsonify, Response, stream_with_context
+from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory
 from flask_cors import CORS
 
 from src.utils.sql_executor import SQLExecutor
 from src.semantic_layer.semantic_loader import get_semantic_layer
+from src.datasource import get_provider as _get_ds_provider, provider_registry as _ds_registry
 
 DB_PATH = os.path.join(ROOT, "data", "processed", "retail.db")
 executor = SQLExecutor(db_path=DB_PATH)
@@ -910,6 +911,104 @@ def api_db_health():
         "healthScore": health_score,
         "totalRows": total_rows,
     })
+
+
+# ==================== 数据源 Provider API ====================
+
+@app.route("/api/datasource/status", methods=["GET"])
+def api_datasource_status():
+    """返回当前激活的数据源 + 所有已注册数据源状态。"""
+    current = _get_ds_provider()
+    return jsonify({
+        "current": current.source_type,
+        "provider": current.health_check(),
+        "registry": _ds_registry(),
+    })
+
+
+@app.route("/api/datasource/datasets", methods=["GET"])
+def api_datasource_datasets():
+    """列出当前数据源的所有数据集。"""
+    source_type = request.args.get("source_type")
+    provider = _get_ds_provider(source_type)
+    try:
+        datasets = provider.list_datasets()
+        return jsonify({"success": True, "source_type": provider.source_type,
+                        "is_real": provider.is_real, "datasets": datasets})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/datasource/datasets/<dataset_id>/schema", methods=["GET"])
+def api_datasource_schema(dataset_id):
+    """获取数据集字段 Schema。"""
+    source_type = request.args.get("source_type")
+    provider = _get_ds_provider(source_type)
+    try:
+        schema = provider.get_dataset_schema(dataset_id)
+        schema["source_type"] = provider.source_type
+        schema["is_real"] = provider.is_real
+        return jsonify(schema)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/datasource/datasets/<dataset_id>/preview", methods=["GET"])
+def api_datasource_preview(dataset_id):
+    """预览数据集前 N 行。"""
+    limit = request.args.get("limit", 20, type=int)
+    source_type = request.args.get("source_type")
+    provider = _get_ds_provider(source_type)
+    try:
+        result = provider.preview_dataset(dataset_id, limit=limit)
+        result["source_type"] = provider.source_type
+        result["is_real"] = provider.is_real
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/datasource/query", methods=["POST"])
+def api_datasource_query():
+    """通过数据源 Provider 执行 SQL 查询。"""
+    body = request.get_json(silent=True) or {}
+    sql = (body.get("sql") or "").strip()
+    max_rows = body.get("max_rows", 200)
+    source_type = body.get("source_type")
+    if not sql:
+        return jsonify({"success": False, "error": "缺少 sql 参数"}), 400
+    provider = _get_ds_provider(source_type)
+    try:
+        result = provider.run_query(sql, max_rows=max_rows)
+        result["source_type"] = provider.source_type
+        result["is_real"] = provider.is_real
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ---------- 生产环境：托管前端静态文件（Render / 单机部署） ----------
+STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(ROOT, "static"))
+_STATIC_ENABLED = os.path.isdir(STATIC_DIR)
+
+if _STATIC_ENABLED:
+    @app.route("/favicon.ico")
+    def _favicon():
+        return send_from_directory(STATIC_DIR, "favicon.ico", mimetype="image/svg+xml")
+
+    @app.route("/assets/<path:filename>")
+    def _static_assets(filename):
+        return send_from_directory(os.path.join(STATIC_DIR, "assets"), filename)
+
+    @app.route("/", defaults={"path": ""})
+    @app.route("/<path:path>")
+    def _spa_fallback(path):
+        if path.startswith("api/"):
+            return jsonify({"error": "Not Found"}), 404
+        full = os.path.join(STATIC_DIR, path)
+        if path and os.path.isfile(full):
+            return send_from_directory(STATIC_DIR, path)
+        return send_from_directory(STATIC_DIR, "index.html")
 
 
 if __name__ == "__main__":

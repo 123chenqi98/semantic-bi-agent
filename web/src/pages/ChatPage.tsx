@@ -111,7 +111,7 @@ function attachSkillEnhancements(
 }
 
 export default function ChatPage() {
-  const { state, dispatch, currentConversation } = useApp();
+  const { dispatch, currentConversation } = useApp();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const disableBackend = (import.meta as any).env?.VITE_DISABLE_BACKEND === '1';
 

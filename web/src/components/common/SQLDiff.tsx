@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode, type ReactElement } from 'react';
-import { GitCompare, ChevronDown, ChevronRight, Minus, Plus, Hash, ArrowRightLeft } from 'lucide-react';
+import { GitCompare, ChevronDown, ChevronRight, Minus, Plus, ArrowRightLeft } from 'lucide-react';
 import {
   computeLineDiff, summarizeDiff, type LineDiffRow, type InlineDiffOp,
 } from '../../utils/diff';
@@ -167,7 +167,7 @@ export default function SQLDiff({ baselineSql, optimizedSql, title, compact, def
         <div style={{ overflowX: 'auto' }}>
           <div
             className="grid"
-            style={{ gridTemplateColumns: 'minmax(0,1fr) 20px minmax(0,1fr)', minWidth: 640 }}
+            style={{ gridTemplateColumns: 'minmax(0,1fr) 1px minmax(0,1fr)', minWidth: 640 }}
           >
             {/* 左栏表头 */}
             <div className="flex items-center gap-2" style={{ padding: '8px 12px', background: '#FDF2F2', borderBottom: '1px solid #F1F2F3' }}>
@@ -218,14 +218,14 @@ function DiffRowView({ row }: { row: LineDiffRow }) {
   const rightHas = row.right !== undefined;
 
   const renderLeft = (
-    <div className={`flex items-stretch ${rowClass}`} style={{ borderBottom: '1px solid #F8F9FB', minHeight: 22 }}>
-      <div className="flex items-center" style={{ width: 12, padding: '0 4px 0 8px', color: '#B0B5BD' }}>
+    <div className={`flex items-stretch ${rowClass}`} style={{ borderBottom: '1px solid #F8F9FB', minHeight: 24, overflow: 'hidden', minWidth: 0 }}>
+      <div className="flex items-center justify-center" style={{ width: 20, flexShrink: 0, color: '#B0B5BD' }}>
         {row.op !== 'insert' && row.op !== 'replace-r' ? prefixIcon : <span style={{ width: 12 }} />}
       </div>
-      <div className="sv-gutter" style={{ width: 36 }}>
+      <div className="sv-gutter" style={{ width: 40, flexShrink: 0 }}>
         {row.leftLineNo !== undefined ? row.leftLineNo : ''}
       </div>
-      <div className="sv-sql" style={{ flex: 1, padding: '0 12px' }}>
+      <div className="sv-sql" style={{ flex: 1, minWidth: 0, padding: '0 12px', overflow: 'hidden' }}>
         {leftHas
           ? syntaxHighlightTokens(row.left ?? '', row.op === 'replace-l' ? row.pairDiff : undefined, 'L')
           : '\u00a0'}
@@ -235,28 +235,22 @@ function DiffRowView({ row }: { row: LineDiffRow }) {
 
   const renderMiddle = (
     <div style={{
-      borderLeft: '1px dashed #F1F2F3',
-      width: 20, flexShrink: 0,
-      background: row.op === 'equal' ? '#FAFBFC' : '#F7F8FA',
+      borderLeft: '1px solid #F1F2F3',
+      width: 1, flexShrink: 0,
+      background: '#F1F2F3',
       borderBottom: '1px solid #F8F9FB',
-    }}>
-      {(row.op === 'replace-l' || row.op === 'replace-r' || row.op === 'delete' || row.op === 'insert') && (
-        <div className="h-full w-full flex items-center justify-center" style={{ color: '#B0B5BD' }}>
-          <Hash size={10} opacity={0.01} />
-        </div>
-      )}
-    </div>
+    }} />
   );
 
   const renderRight = (
-    <div className={`flex items-stretch ${rowClass}`} style={{ borderBottom: '1px solid #F8F9FB', minHeight: 22 }}>
-      <div className="flex items-center" style={{ width: 12, padding: '0 4px 0 8px', color: '#B0B5BD' }}>
+    <div className={`flex items-stretch ${rowClass}`} style={{ borderBottom: '1px solid #F8F9FB', minHeight: 24, overflow: 'hidden', minWidth: 0 }}>
+      <div className="flex items-center justify-center" style={{ width: 20, flexShrink: 0, color: '#B0B5BD' }}>
         {row.op !== 'delete' && row.op !== 'replace-l' ? (row.op === 'equal' ? <span style={{ width: 12 }} /> : prefixIcon) : <span style={{ width: 12 }} />}
       </div>
-      <div className="sv-gutter" style={{ width: 36 }}>
+      <div className="sv-gutter" style={{ width: 40, flexShrink: 0 }}>
         {row.rightLineNo !== undefined ? row.rightLineNo : ''}
       </div>
-      <div className="sv-sql" style={{ flex: 1, padding: '0 12px' }}>
+      <div className="sv-sql" style={{ flex: 1, minWidth: 0, padding: '0 12px', overflow: 'hidden' }}>
         {rightHas
           ? syntaxHighlightTokens(row.right ?? '', row.op === 'replace-r' ? row.pairDiff : undefined, 'R')
           : '\u00a0'}
@@ -264,16 +258,18 @@ function DiffRowView({ row }: { row: LineDiffRow }) {
     </div>
   );
 
-  // 左右空对：用 CSS grid
+  const emptyCell = (
+    <div style={{ borderBottom: '1px solid #F8F9FB', minHeight: 24, background: 'transparent' }} />
+  );
+
+  const showLeft = row.op === 'equal' || row.op === 'replace-l' || row.op === 'delete' || row.op === 'empty';
+  const showRight = row.op === 'equal' || row.op === 'replace-r' || row.op === 'insert' || row.op === 'empty';
+
   return (
     <>
-      {row.op === 'equal' || row.op === 'replace-l' || row.op === 'delete' || row.op === 'empty' ? (
-        leftHas ? renderLeft : <div style={{ borderBottom: '1px solid #F8F9FB' }} />
-      ) : <div style={{ borderBottom: '1px solid #F8F9FB' }} />}
+      {showLeft ? (leftHas ? renderLeft : emptyCell) : emptyCell}
       {renderMiddle}
-      {row.op === 'equal' || row.op === 'replace-r' || row.op === 'insert' || row.op === 'empty' ? (
-        rightHas ? renderRight : <div style={{ borderBottom: '1px solid #F8F9FB' }} />
-      ) : <div style={{ borderBottom: '1px solid #F8F9FB' }} />}
+      {showRight ? (rightHas ? renderRight : emptyCell) : emptyCell}
     </>
   );
 }

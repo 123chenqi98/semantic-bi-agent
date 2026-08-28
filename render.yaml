@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: semantic-bi-agent
+    runtime: docker
+    plan: free
+    dockerfilePath: Dockerfile.render
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: DATASOURCE_TYPE
+        value: currentLocal
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: LLM_TEMPERATURE
+        value: "0"
+      - key: LLM_TIMEOUT
+        value: "30"
+      - key: LLM_MAX_RETRIES
+        value: "2"
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_MODEL
+        sync: false

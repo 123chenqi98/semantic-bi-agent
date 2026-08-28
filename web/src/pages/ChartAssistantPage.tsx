@@ -233,7 +233,7 @@ export default function ChartAssistantPage() {
               outerRadius={110}
               innerRadius={50}
               paddingAngle={2}
-              label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+              label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
               labelLine={{ stroke: '#B0B5BD', strokeWidth: 1 }}
             >
               {pieData.map((_, i) => (
@@ -247,7 +247,7 @@ export default function ChartAssistantPage() {
                 borderRadius: 4, fontSize: 12, color: currentStyle.tooltip.text,
                 boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
               }}
-              formatter={(v: number) => v.toLocaleString()}
+              formatter={(v: any) => (Number(v) || 0).toLocaleString()}
             />
           </PieChart>
         </ResponsiveContainer>
@@ -395,10 +395,10 @@ export default function ChartAssistantPage() {
                 borderRadius: 4, fontSize: 12, color: currentStyle.tooltip.text,
                 boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
               }}
-              formatter={(value: number, name: string) => {
+              formatter={(value: any, name: any) => {
                 if (name === '__start') return [null, null];
-                if (name === '__end') return [Math.abs(value).toLocaleString(), '变动'];
-                if (name === '__total') return [value != null ? value.toLocaleString() : '-', '总计'];
+                if (name === '__end') return [Math.abs(Number(value) || 0).toLocaleString(), '变动'];
+                if (name === '__total') return [value != null ? Number(value).toLocaleString() : '-', '总计'];
                 return [value, name];
               }}
             />

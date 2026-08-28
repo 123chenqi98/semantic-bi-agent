@@ -1,0 +1,32 @@
+# ==================== 后端 Dockerfile ====================
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc && rm -rf /var/lib/apt/lists/*
+
+# 先装依赖（利用 Docker 缓存）
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 拷贝项目代码
+COPY src/ ./src/
+COPY wsgi.py .
+COPY data/ ./data/
+
+# 环境变量默认值
+ENV BACKEND_PORT=5001 \
+    FLASK_ENV=production \
+    PYTHONUNBUFFERED=1 \
+    DATASOURCE_TYPE=currentLocal
+
+EXPOSE 5001
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5001/api/health')" || exit 1
+
+# gunicorn 启动：4 worker，120s 超时（LLM 调用可能较慢）
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5001", "wsgi:app", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-"]

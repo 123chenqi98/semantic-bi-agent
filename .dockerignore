@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.local
+.git/
+.gitignore
+*.db-journal
+.DS_Store
+web/node_modules/
+web/dist/
+outputs/*.html
+outputs/*.json
+.idea/
+.vscode/

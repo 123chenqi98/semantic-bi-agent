@@ -27,33 +27,27 @@ export function computeLineDiff(leftRaw: string, rightRaw: string): LineDiffRow[
   const B = normalizeLines(rightRaw);
   const ops = lcsDiff(A, B);
   const rows: LineDiffRow[] = [];
-  let i = 0, j = 0;
+  let aIdx = 0, bIdx = 0;
   let leftLn = 1, rightLn = 1;
-  while (i < ops.length) {
-    const op = ops[i];
+  let k = 0;
+  while (k < ops.length) {
+    const op = ops[k];
     if (op === 'equal') {
       rows.push({
-        op: 'equal', left: A[i], right: B[j],
+        op: 'equal', left: A[aIdx], right: B[bIdx],
         leftLineNo: leftLn++, rightLineNo: rightLn++,
       });
-      i++; j++;
+      aIdx++; bIdx++; k++;
     } else if (op === 'delete') {
-      // 尝试匹配后面是否有 insert → 合并为 replace 对
-      const deletes: string[] = [A[i]];
-      const delsStart = i;
-      i++;
-      while (i < ops.length && ops[i] === 'delete') { deletes.push(A[i]); i++; }
+      const deletes: string[] = [];
+      while (k < ops.length && ops[k] === 'delete') { deletes.push(A[aIdx++]); k++; }
       const inserts: string[] = [];
-      while (i < ops.length && ops[i] === 'insert') { inserts.push(B[i - deletes.length + inserts.length]); i++; }
+      while (k < ops.length && ops[k] === 'insert') { inserts.push(B[bIdx++]); k++; }
       if (inserts.length > 0) {
-        // replace 配对：1:1 / N:M 展开成多对
         const n = Math.max(deletes.length, inserts.length);
-        const delLn0 = leftLn;
-        const insLn0 = rightLn;
-        for (let k = 0; k < n; k++) {
-          const d = deletes[k];
-          const r = inserts[k];
-          // 取对应的 1:1 做 word-level diff（如果两边都存在）
+        for (let p = 0; p < n; p++) {
+          const d = deletes[p];
+          const r = inserts[p];
           let pairDiff: InlineDiffOp[] | undefined;
           if (d !== undefined && r !== undefined) pairDiff = computeWordDiff(d, r);
           if (d !== undefined) {
@@ -62,7 +56,7 @@ export function computeLineDiff(leftRaw: string, rightRaw: string): LineDiffRow[
               pairDiff: pairDiff?.filter(p => p.op === 'delete' || p.op === 'equal'),
             });
           } else {
-            rows.push({ op: 'empty', rightLineNo: undefined });
+            rows.push({ op: 'empty' });
           }
           if (r !== undefined) {
             rows.push({
@@ -70,8 +64,6 @@ export function computeLineDiff(leftRaw: string, rightRaw: string): LineDiffRow[
               pairDiff: pairDiff?.filter(p => p.op === 'insert' || p.op === 'equal'),
             });
           }
-          // 用 unused (keep TS unused-vars 警告安全)
-          void delsStart; void delLn0; void insLn0;
         }
       } else {
         for (const d of deletes) {
@@ -79,16 +71,13 @@ export function computeLineDiff(leftRaw: string, rightRaw: string): LineDiffRow[
         }
       }
     } else if (op === 'insert') {
-      // 前面的 delete 已处理了 delete+insert 配对的情况；这里只剩下纯 insert
-      const inserts: string[] = [B[j]];
-      i++; j++;
-      while (i < ops.length && ops[i] === 'insert') { inserts.push(B[j]); i++; j++; }
+      const inserts: string[] = [];
+      while (k < ops.length && ops[k] === 'insert') { inserts.push(B[bIdx++]); k++; }
       for (const r of inserts) {
         rows.push({ op: 'insert', right: r, rightLineNo: rightLn++ });
       }
     } else {
-      // 理论不会到这里
-      i++;
+      k++;
     }
   }
   return rows;

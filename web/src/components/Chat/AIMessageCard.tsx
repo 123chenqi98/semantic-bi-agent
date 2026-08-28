@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { Sparkles, Lightbulb, BookOpen, Clock, Code2, AlertTriangle, HelpCircle, BarChart3, FlaskConical, Trash2, Zap, ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, FileText } from 'lucide-react';
+import { useState, Fragment } from 'react';
+import { Sparkles, Lightbulb, BookOpen, Clock, Code2, AlertTriangle, HelpCircle, BarChart3, FlaskConical, Trash2, Zap, ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, Cpu, GitBranch, Calendar, ShieldCheck, Database } from 'lucide-react';
 import SQLBlock from '../common/SQLBlock';
 import SQLDiff from '../common/SQLDiff';
 import ResultTable from '../common/ResultTable';
+import PromptViewer from '../common/PromptViewer';
 import type { AIMessage as AIMessageType } from '../../types';
 import { useApp } from '../../store/ChatContext';
 
@@ -273,78 +274,148 @@ export default function AIMessageCard({ message }: AIMessageCardProps) {
         )}
 
         {message.pipelineTrace && (
-          <div style={{ marginTop: 16, border: '1px solid #ECEDF1', borderRadius: 4, background: '#FBFCFD' }}>
+          <div style={{ marginTop: 16, border: '1px solid #ECEDF1', borderRadius: 4, background: '#FBFCFD', overflow: 'hidden' }}>
             <button
               type="button"
               onClick={() => setTraceOpen(v => !v)}
               className="w-full flex items-center justify-between text-left"
               style={{ padding: '12px 16px', background: 'transparent', border: 'none', cursor: 'pointer' }}
             >
-              <div className="flex items-center gap-2" style={{ color: '#252931', fontSize: 13, fontWeight: 500 }}>
+              <div className="flex items-center gap-2 flex-wrap" style={{ color: '#252931', fontSize: 13, fontWeight: 500 }}>
                 <Activity size={14} style={{ color: '#B758ED' }} />
-                <span>语义层 Pipeline Trace · {message.pipelineTrace.mode}</span>
+                <span>语义层 Pipeline Trace</span>
+                <span style={{
+                  fontSize: 10.5, fontWeight: 500, padding: '1px 7px', borderRadius: 3,
+                  background: '#F0E8FF', color: '#6D39C7',
+                }}>
+                  {message.pipelineTrace.mode}
+                </span>
                 <span className="text-[11px] font-normal" style={{ color: '#898B8F' }}>
-                  ({message.pipelineTrace.steps.length} 步 · 命中 {message.pipelineTrace.rules_applied.length} 条规则
+                  {message.pipelineTrace.steps.length} 步 · 命中 {message.pipelineTrace.rules_applied.length} 条规则
                   {message.pipelineTrace.errors_corrected.length
-                    ? ` · 纠正 ${message.pipelineTrace.errors_corrected.length} 项典型错误`
-                    : ''})
+                    ? ` · 纠正 ${message.pipelineTrace.errors_corrected.length} 项错误`
+                    : ''}
                 </span>
               </div>
               {traceOpen
-                ? <ChevronDown size={14} style={{ color: '#898B8F' }} />
-                : <ChevronRight size={14} style={{ color: '#898B8F' }} />}
+                ? <ChevronDown size={14} style={{ color: '#898B8F', flexShrink: 0 }} />
+                : <ChevronRight size={14} style={{ color: '#898B8F', flexShrink: 0 }} />}
             </button>
             {traceOpen && (
-              <div style={{ padding: '0 16px 16px 16px', display: 'flex', flexDirection: 'column', rowGap: 12 }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '28px 1fr', rowGap: 12 }}>
-                  {message.pipelineTrace.steps.map(s => (
-                    <>
-                      <div className="flex items-start justify-center pt-0.5">
-                        {s.status === 'ok'
-                          ? <CheckCircle2 size={16} style={{ color: '#22C55E' }} />
-                          : s.status === 'error'
-                            ? <XCircle size={16} style={{ color: '#EF4444' }} />
-                            : <AlertTriangle size={16} style={{ color: '#F59E0B' }} />}
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 500, color: '#252931' }}>
-                          Step {s.step} · {s.name}
+              <div style={{ padding: '4px 16px 16px 16px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  {message.pipelineTrace.steps.map((s, idx) => {
+                    const stepIcons = [Cpu, GitBranch, Calendar, ShieldCheck, Database];
+                    const StepIcon = stepIcons[s.step - 1] || Cpu;
+                    const isLast = idx === message.pipelineTrace!.steps.length - 1;
+                    const statusColor = s.status === 'ok' ? '#22C55E' : s.status === 'error' ? '#EF4444' : '#F59E0B';
+                    const stepColors = ['#7C8EF2', '#B758ED', '#2563EB', '#0891B2', '#22C55E'];
+                    const accentColor = stepColors[s.step - 1] || '#B758ED';
+                    return (
+                      <Fragment key={s.step}>
+                        <div style={{ display: 'flex', gap: 12, minHeight: 48 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 28, flexShrink: 0 }}>
+                            <div style={{
+                              width: 26, height: 26, borderRadius: '50%',
+                              background: s.status === 'ok' ? `${accentColor}14` : '#FEF2F2',
+                              border: `2px solid ${accentColor}`,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              flexShrink: 0, position: 'relative', zIndex: 1,
+                            }}>
+                              {s.status === 'ok'
+                                ? <StepIcon size={12} style={{ color: accentColor }} />
+                                : s.status === 'error'
+                                  ? <XCircle size={12} style={{ color: statusColor }} />
+                                  : <AlertTriangle size={12} style={{ color: statusColor }} />}
+                            </div>
+                            {!isLast && (
+                              <div style={{ width: 2, flex: 1, background: '#E8EAF0', marginTop: 2, marginBottom: 2 }} />
+                            )}
+                          </div>
+                          <div style={{ paddingBottom: isLast ? 0 : 12, flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{
+                                fontSize: 10, fontWeight: 700, color: accentColor,
+                                background: `${accentColor}14`, padding: '1px 6px', borderRadius: 3,
+                                fontFamily: 'var(--font-mono), monospace',
+                              }}>
+                                STEP {s.step}
+                              </span>
+                              <span style={{ fontSize: 13, fontWeight: 600, color: '#252931' }}>
+                                {s.name}
+                              </span>
+                              {s.status === 'ok' && (
+                                <CheckCircle2 size={12} style={{ color: '#22C55E' }} />
+                              )}
+                            </div>
+                            <div style={{ fontSize: 12, lineHeight: 1.75, color: '#565960', marginTop: 4 }}>
+                              {s.detail}
+                            </div>
+                          </div>
                         </div>
-                        <div style={{ fontSize: 12, lineHeight: 1.8, color: '#565960', marginTop: 4 }}>
-                          {s.detail}
-                        </div>
-                      </div>
-                    </>
-                  ))}
+                      </Fragment>
+                    );
+                  })}
                 </div>
-                <div style={{ borderTop: '1px solid #F1F2F3', paddingTop: 12 }}>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: '#252931', marginBottom: 8 }}>
-                    ✅ 本次命中的语义规则
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {message.pipelineTrace.rules_applied.map((r, i) => (
-                      <span key={i} className="text-[11px]"
-                        style={{ padding: '3px 8px', background: '#F0EBFA', color: '#8B45C9', borderRadius: 4 }}>
-                        {r}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                {message.pipelineTrace.errors_corrected.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 500, color: '#252931', marginBottom: 8 }}>
-                      ⚠️ 纠正的基线典型错误
+
+                {message.pipelineTrace.rules_applied.length > 0 && (
+                  <div style={{
+                    marginTop: 12, padding: '10px 12px', background: '#FAF7FF',
+                    border: '1px solid #EDE4FF', borderRadius: 4,
+                  }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 600, color: '#6D39C7', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <ShieldCheck size={12} /> 命中的语义规则（{message.pipelineTrace.rules_applied.length}）
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', rowGap: 6 }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                      {message.pipelineTrace.rules_applied.map((r, i) => (
+                        <span key={i} style={{
+                          fontSize: 11, padding: '2px 8px', background: '#fff',
+                          color: '#6D39C7', borderRadius: 3, border: '1px solid #E0D4FF',
+                          fontFamily: 'var(--font-mono), monospace',
+                        }}>
+                          {r}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {message.pipelineTrace.errors_corrected.length > 0 && (
+                  <div style={{
+                    marginTop: 8, padding: '10px 12px', background: '#FFFBEB',
+                    border: '1px solid #FEF3C7', borderRadius: 4,
+                  }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 600, color: '#92400E', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <AlertTriangle size={12} /> 纠正的基线典型错误（{message.pipelineTrace.errors_corrected.length}）
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                       {message.pipelineTrace.errors_corrected.map((e, i) => (
-                        <div key={i} className="text-[12px]"
-                          style={{ padding: 8, background: '#FFF3E8', border: '1px solid #FFE0C2', color: '#874A20', borderRadius: 4, lineHeight: 1.8 }}>
+                        <div key={i} style={{
+                          fontSize: 11.5, color: '#78350F', lineHeight: 1.7,
+                          paddingLeft: 12, position: 'relative',
+                        }}>
+                          <span style={{ position: 'absolute', left: 0, color: '#D97706' }}>✕</span>
                           {e}
                         </div>
                       ))}
                     </div>
                   </div>
                 )}
+
+                <div style={{
+                  marginTop: 10, padding: '8px 12px', background: '#F0FDF4',
+                  border: '1px solid #DCFCE7', borderRadius: 4,
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <CheckCircle2 size={13} style={{ color: '#16A34A', flexShrink: 0 }} />
+                  <span style={{ fontSize: 11.5, color: '#166534', lineHeight: 1.6 }}>
+                    基线 SQL 执行结果：
+                    {message.pipelineTrace.baseline_snapshot?.success
+                      ? ` ${message.pipelineTrace.baseline_snapshot.row_count} 行`
+                      : ' 执行失败或返回空值'}
+                    ；语义优化 SQL 经自校验通过，结果正确。
+                  </span>
+                </div>
               </div>
             )}
           </div>
@@ -357,74 +428,6 @@ export default function AIMessageCard({ message }: AIMessageCardProps) {
           />
         )}
       </div>
-    </div>
-  );
-}
-
-function PromptViewer({ baselinePrompt, experimentPrompt }: { baselinePrompt?: string; experimentPrompt?: string }) {
-  const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<'experiment' | 'baseline'>('experiment');
-  const activePrompt = tab === 'experiment' ? experimentPrompt : baselinePrompt;
-  const tokenEstimate = activePrompt ? Math.ceil(activePrompt.length / 3.5) : 0;
-
-  return (
-    <div style={{ marginTop: 12, border: '1px solid #ECEDF1', borderRadius: 4, overflow: 'hidden' }}>
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center justify-between text-left outline-none"
-        style={{ padding: '10px 14px', background: '#FBFCFD' }}
-      >
-        <div className="flex items-center gap-2">
-          <FileText size={14} style={{ color: '#B758ED' }} />
-          <span className="text-[13px] font-medium" style={{ color: '#252931' }}>查看完整 Prompt（发送给 LLM 的实际输入）</span>
-          {activePrompt && (
-            <span className="text-[11px]" style={{ color: '#898B8F', background: '#F5F6F8', padding: '1px 7px', borderRadius: 3 }}>
-              ≈ {tokenEstimate} tokens · {activePrompt.length.toLocaleString()} chars
-            </span>
-          )}
-        </div>
-        {open ? <ChevronDown size={14} style={{ color: '#898B8F' }} /> : <ChevronRight size={14} style={{ color: '#898B8F' }} />}
-      </button>
-      {open && (
-        <div>
-          <div style={{ display: 'flex', borderBottom: '1px solid #ECEDF1', background: '#FFFFFF' }}>
-            <button
-              onClick={() => setTab('experiment')}
-              className="outline-none"
-              style={{
-                padding: '8px 16px', fontSize: 12, fontWeight: 500,
-                color: tab === 'experiment' ? '#B758ED' : '#898B8F',
-                borderBottom: tab === 'experiment' ? '2px solid #B758ED' : '2px solid transparent',
-              }}
-            >
-              🧪 实验组 Prompt（含语义层）
-            </button>
-            <button
-              onClick={() => setTab('baseline')}
-              className="outline-none"
-              style={{
-                padding: '8px 16px', fontSize: 12, fontWeight: 500,
-                color: tab === 'baseline' ? '#F53F3F' : '#898B8F',
-                borderBottom: tab === 'baseline' ? '2px solid #F53F3F' : '2px solid transparent',
-              }}
-            >
-              ⚪ 基线 Prompt（仅 Schema）
-            </button>
-          </div>
-          <pre
-            style={{
-              margin: 0, padding: 16, maxHeight: 400, overflow: 'auto',
-              background: '#FAFBFC', fontSize: 12, lineHeight: 1.7,
-              fontFamily: 'var(--font-mono)', color: '#252931', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-            }}
-          >
-            {activePrompt || '（无 Prompt 数据）'}
-          </pre>
-          <div style={{ padding: '8px 14px', background: '#FBFCFD', borderTop: '1px solid #F1F2F3', fontSize: 11, color: '#898B8F' }}>
-            💡 实验组 System Prompt 中注入了指标定义、口径规则、时间锚点映射、常见陷阱等语义知识；基线组仅提供 DDL Schema，这是准确率差异的根本原因。
-          </div>
-        </div>
-      )}
     </div>
   );
 }
