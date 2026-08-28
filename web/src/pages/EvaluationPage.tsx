@@ -119,7 +119,7 @@ export default function EvaluationPage() {
 
   return (
     <div className="flex-1 h-[calc(100vh-64px)] overflow-y-auto">
-      <div style={{ maxWidth: 1400, margin: '0 auto', padding: '40px 48px 64px 48px', display: 'flex', flexDirection: 'column', rowGap: 32 }}>
+      <div className="page-padding-responsive" style={{ maxWidth: 1400, margin: '0 auto', padding: '40px 48px 64px 48px', display: 'flex', flexDirection: 'column', rowGap: 32 }}>
         {/* 统计卡片 */}
         <div className="grid grid-cols-4" style={{ columnGap: 20 }}>
           {statCards.map((c, i) => {
@@ -411,7 +411,7 @@ export default function EvaluationPage() {
           </div>
 
           {/* 错因贡献度 */}
-          <div className="grid grid-cols-5 gap-5 items-start">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-5 items-start">
             <div style={{ gridColumn: 'span 2' }}>
               <div className="text-[13px] font-medium mb-3" style={{ color: '#252931' }}>
                 基线错误归因 · 各模块修复的错误数量（共 {totalErrorItems} 个错误项）

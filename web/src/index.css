@@ -253,5 +253,67 @@ input, textarea {
   .grid.grid-cols-2 {
     grid-template-columns: 1fr !important;
   }
+
+  [style*="grid-template-columns: repeat(4"] {
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  [style*="grid-template-columns: 1fr 1fr"],
+  [style*="grid-template-columns: 1.1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  .grid[class*="grid-cols-1"] [style*="grid-column: span"] {
+    grid-column: span 1 !important;
+  }
+}
+
+@media (max-width: 480px) {
+  [style*="grid-template-columns: repeat(4"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+.semantic-backdrop {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .semantic-mobile-trigger {
+    display: flex !important;
+  }
+
+  .semantic-sidebar {
+    position: fixed;
+    top: 64px;
+    left: 0;
+    bottom: 0;
+    z-index: 45;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.12);
+  }
+
+  .semantic-sidebar.semantic-sidebar-open {
+    transform: translateX(0);
+  }
+
+  .semantic-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    top: 64px;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 40;
+  }
+
+  .semantic-content {
+    padding: 16px 14px 32px !important;
+  }
+
+  .page-padding-responsive {
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+  }
 }
 

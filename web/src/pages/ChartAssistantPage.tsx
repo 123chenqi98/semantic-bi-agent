@@ -425,7 +425,7 @@ export default function ChartAssistantPage() {
 
   return (
     <div className="flex-1 h-[calc(100vh-64px)] overflow-y-auto">
-      <div style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 48px 64px 48px', display: 'flex', flexDirection: 'column', rowGap: 24 }}>
+      <div className="page-padding-responsive" style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 48px 64px 48px', display: 'flex', flexDirection: 'column', rowGap: 24 }}>
 
         {/* 图表类型 Tabs */}
         <div className="bg-white" style={{ border: '1px solid #ECEDF1', borderRadius: 4, padding: '6px 8px', display: 'flex', gap: 2 }}>

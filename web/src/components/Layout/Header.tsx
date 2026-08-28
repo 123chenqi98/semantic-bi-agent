@@ -22,7 +22,7 @@ export default function Header({ onToggleSidebar }: HeaderProps) {
 
   return (
     <div
-      className="shrink-0 flex items-center bg-white px-6 relative"
+      className="shrink-0 flex items-center bg-white px-4 md:px-6 relative"
       style={{
         height: 64,
         borderBottom: '1px solid #F1F2F3',
@@ -60,12 +60,12 @@ export default function Header({ onToggleSidebar }: HeaderProps) {
                 flexShrink: 0,
               }}
             />
-            <h1 className="text-[18px] font-semibold" style={{ color: '#252931', letterSpacing: '-0.01em' }}>
+            <h1 className="text-[15px] md:text-[18px] font-semibold" style={{ color: '#252931', letterSpacing: '-0.01em' }}>
               {meta.title}
             </h1>
           </div>
           <div
-            className="absolute right-6 flex items-center gap-1.5 text-[12px]"
+            className="absolute right-4 md:right-6 flex items-center gap-1.5 text-[12px]"
             style={{
               color: '#565960',
               background: '#FAFBFC',
@@ -75,17 +75,18 @@ export default function Header({ onToggleSidebar }: HeaderProps) {
             }}
           >
             <Circle size={6} style={{ color: '#00B42A', fill: '#00B42A' }} />
-            <span>doubao-seed-2-pro</span>
+            <span className="hidden sm:inline">doubao-seed-2-pro</span>
+            <span className="sm:hidden">在线</span>
           </div>
         </>
       ) : (
         <>
           <div className="flex flex-col" style={{ minWidth: 0 }}>
-            <h1 className="text-[18px] font-semibold leading-tight" style={{ color: '#252931', letterSpacing: '-0.01em' }}>
+            <h1 className="text-[16px] md:text-[18px] font-semibold leading-tight truncate" style={{ color: '#252931', letterSpacing: '-0.01em' }}>
               {meta.title}
             </h1>
             {meta.desc && (
-              <span className="text-[12px] mt-1" style={{ color: '#898B8F' }}>{meta.desc}</span>
+              <span className="hidden md:block text-[12px] mt-1 truncate" style={{ color: '#898B8F' }}>{meta.desc}</span>
             )}
           </div>
           <div
@@ -93,7 +94,7 @@ export default function Header({ onToggleSidebar }: HeaderProps) {
             style={{ color: '#565960', background: '#FAFBFC', padding: '5px 10px', borderRadius: 100, border: '1px solid #F1F2F3' }}
           >
             <Circle size={6} style={{ color: '#00B42A', fill: '#00B42A' }} />
-            <span>已连接</span>
+            <span className="hidden sm:inline">已连接</span>
           </div>
         </>
       )}

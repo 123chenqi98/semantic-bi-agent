@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Save, RotateCcw, Sparkles, CheckCircle2, Edit3, Plus, X, Code2, BookOpen } from 'lucide-react';
+import { Save, RotateCcw, Sparkles, CheckCircle2, Edit3, Plus, X, Code2, BookOpen, ChevronRight } from 'lucide-react';
 import { metrics as defaultMetrics, globalRules as defaultRules } from '../mock/data';
 import type { Metric } from '../types';
 
@@ -24,6 +24,7 @@ export default function SemanticEditorPage() {
   const [newAlias, setNewAlias] = useState('');
   const [newNote, setNewNote] = useState('');
   const [showDemo, setShowDemo] = useState(false);
+  const [mobileListOpen, setMobileListOpen] = useState(false);
 
   const selected = metrics.find(m => m.id === selectedId)!;
   const isDirty = JSON.stringify(metrics) !== JSON.stringify(defaultMetrics);
@@ -88,8 +89,11 @@ export default function SemanticEditorPage() {
   };
 
   return (
-    <div className="flex-1 h-[calc(100vh-64px)] overflow-hidden flex">
-      <div style={{ width: 280, borderRight: '1px solid #F1F2F3', background: '#FBFCFD', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
+    <div className="flex-1 h-[calc(100vh-64px)] overflow-hidden flex relative">
+      {mobileListOpen && (
+        <div className="semantic-backdrop" onClick={() => setMobileListOpen(false)} />
+      )}
+      <div className={`semantic-sidebar ${mobileListOpen ? 'semantic-sidebar-open' : ''}`} style={{ width: 280, borderRight: '1px solid #F1F2F3', background: '#FBFCFD', display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
         <div style={{ padding: '16px 16px 8px' }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#898B8F', letterSpacing: '0.02em' }}>指标列表（{metrics.length}）</div>
         </div>
@@ -97,7 +101,7 @@ export default function SemanticEditorPage() {
           {metrics.map(m => (
             <button
               key={m.id}
-              onClick={() => setSelectedId(m.id)}
+              onClick={() => { setSelectedId(m.id); setMobileListOpen(false); }}
               className="w-full text-left outline-none"
               style={{
                 padding: '10px 12px', borderRadius: 4, marginBottom: 2,
@@ -127,9 +131,20 @@ export default function SemanticEditorPage() {
         </div>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '32px 40px 48px' }}>
+      <div className="semantic-content" style={{ flex: 1, overflowY: 'auto', padding: '32px 40px 48px' }}>
         <div style={{ maxWidth: 760, margin: '0 auto' }}>
-          <div className="flex items-center justify-between mb-6">
+          <button
+            className="semantic-mobile-trigger"
+            onClick={() => setMobileListOpen(true)}
+            style={{ display: 'none', width: '100%', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', marginBottom: 16, background: '#FBFCFD', border: '1px solid #E5E6EB', borderRadius: 6, fontSize: 13, color: '#252931', cursor: 'pointer' }}
+          >
+            <span className="flex items-center gap-2">
+              <span style={{ fontFamily: 'var(--font-mono)', color: '#B758ED', fontWeight: 600 }}>{selected.id}</span>
+              {selected.name}
+            </span>
+            <ChevronRight size={16} style={{ color: '#898B8F' }} />
+          </button>
+          <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
             <div>
               <h2 className="text-[20px] font-semibold m-0" style={{ color: '#252931' }}>
                 <span style={{ fontFamily: 'var(--font-mono)', color: '#B758ED', marginRight: 8 }}>{selected.id}</span>
