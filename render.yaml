@@ -3,7 +3,7 @@ services:
     name: semantic-bi-agent
     runtime: docker
     plan: free
-    dockerfilePath: Dockerfile.render
+    dockerfilePath: Dockerfile
     dockerContext: .
     healthCheckPath: /api/health
     autoDeploy: true
