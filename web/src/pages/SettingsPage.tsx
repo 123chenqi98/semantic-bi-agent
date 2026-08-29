@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Database, CheckCircle2, AlertTriangle, Activity, Plug, Table2, Eye, ChevronDown, ChevronRight, Building2 } from 'lucide-react';
+import { Database, CheckCircle2, AlertTriangle, Activity, Plug, Table2, Eye, ChevronDown, ChevronRight, Building2, KeyRound, Save, Loader2, Network, ShieldCheck } from 'lucide-react';
 
 interface DbHealth {
   tables: { name: string; rowCount: number }[];
@@ -329,6 +329,9 @@ function DataSourceCard() {
         {status.provider.message}
       </div>
 
+      {/* 风神 BI 企业级凭证配置（仅在选中 fengshenBi 时展示） */}
+      {activeSource === 'fengshenBi' && <FengshenConfigPanel />}
+
       <div className="text-[12px] font-semibold mb-2" style={{ color: '#252931' }}>
         <Table2 size={12} style={{ display: 'inline', marginRight: 4, color: '#B758ED' }} />
         数据集列表（{datasets.length}）
@@ -412,6 +415,228 @@ function DataSourceCard() {
         当前数据源由环境变量 <code style={{ fontFamily: 'var(--font-mono)' }}>DATASOURCE_TYPE</code> 控制。
         新增数据源请实现 <code style={{ fontFamily: 'var(--font-mono)' }}>DataSourceProvider</code> 抽象基类并在 factory 中注册。
       </p>
+    </div>
+  );
+}
+
+interface FengshenForm {
+  base_url: string;
+  app_id: string;
+  app_secret: string;
+  token: string;
+  workspace_id: string;
+}
+
+const ENT_STATUS_BADGE: Record<string, { bg: string; color: string; label: string }> = {
+  mock: { bg: '#FFF7E6', color: '#B25E00', label: 'Mock 演示' },
+  unconfigured: { bg: '#F5F6F8', color: '#898B8F', label: '未配置' },
+  configured: { bg: '#E8F3FF', color: '#1E6FFF', label: '已配置 · 待联调' },
+  verified: { bg: '#EAFBF1', color: '#0F8A2F', label: '凭证已验证' },
+  real_ready: { bg: '#EAFBF1', color: '#0F8A2F', label: '真实可用' },
+};
+
+// 风神 BI 凭证配置面板：表单提交到后端内存托管，密钥不回填明文、不落浏览器持久化。
+function FengshenConfigPanel() {
+  const [form, setForm] = useState<FengshenForm>({ base_url: '', app_id: '', app_secret: '', token: '', workspace_id: '' });
+  const [hasSecret, setHasSecret] = useState<{ app_secret: boolean; token: boolean }>({ app_secret: false, token: false });
+  const [connStatus, setConnStatus] = useState('');
+  const [busy, setBusy] = useState<'' | 'save' | 'test'>('');
+  const [msg, setMsg] = useState<{ type: 'ok' | 'err' | 'info'; text: string } | null>(null);
+  const [workspaces, setWorkspaces] = useState<{ id: string; name: string; role: string }[] | null>(null);
+  const [wsNote, setWsNote] = useState('');
+
+  function loadConfig() {
+    fetch('/api/enterprise-bi/config')
+      .then(r => r.json())
+      .then(d => {
+        const c = d.config || {};
+        // 非密钥项回填；密钥项永不回填明文（留空表示不修改）
+        setForm({
+          base_url: c.base_url || '',
+          app_id: c.app_id || '',
+          workspace_id: c.workspace_id || '',
+          app_secret: '',
+          token: '',
+        });
+        setHasSecret({ app_secret: !!c.has_app_secret, token: !!c.has_token });
+        setConnStatus(d.connection_status || '');
+      })
+      .catch(() => {});
+  }
+
+  useEffect(() => { loadConfig(); }, []);
+
+  function buildPayload(): Record<string, string> {
+    const p: Record<string, string> = {
+      base_url: form.base_url.trim(),
+      app_id: form.app_id.trim(),
+      workspace_id: form.workspace_id.trim(),
+    };
+    // 密钥仅在用户新填写时才提交（留空 = 保持后端已有值不变）
+    if (form.app_secret.trim()) p.app_secret = form.app_secret.trim();
+    if (form.token.trim()) p.token = form.token.trim();
+    return p;
+  }
+
+  function handleSave() {
+    setBusy('save'); setMsg(null);
+    fetch('/api/enterprise-bi/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildPayload()),
+    })
+      .then(r => r.json())
+      .then(d => {
+        setMsg({ type: d.ok ? 'ok' : 'err', text: d.message || '配置已保存' });
+        loadConfig();
+      })
+      .catch(e => setMsg({ type: 'err', text: '保存失败：' + e }))
+      .finally(() => setBusy(''));
+  }
+
+  function handleTest() {
+    setBusy('test'); setMsg(null);
+    fetch('/api/enterprise-bi/connect', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildPayload()),
+    })
+      .then(r => r.json())
+      .then(d => {
+        setConnStatus(d.status || connStatus);
+        // configured / mock 态下 ok=false 属于「预期的待联调」，用中性提示而非报错
+        const pending = d.status === 'configured' || d.status === 'mock';
+        setMsg({ type: d.ok ? 'ok' : pending ? 'info' : 'err', text: d.message || '连接测试完成' });
+        loadConfig();
+        loadWorkspaces();
+      })
+      .catch(e => setMsg({ type: 'err', text: '连接测试失败：' + e }))
+      .finally(() => setBusy(''));
+  }
+
+  function loadWorkspaces() {
+    fetch('/api/enterprise-bi/workspaces')
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) { setWorkspaces(d.workspaces || []); setWsNote(d.mock ? '（Mock 演示工作空间）' : ''); }
+        else { setWorkspaces([]); setWsNote(d.message || '工作空间接口暂不可用'); }
+      })
+      .catch(() => {});
+  }
+
+  const badge = ENT_STATUS_BADGE[connStatus] || ENT_STATUS_BADGE.unconfigured;
+
+  const field = (key: keyof FengshenForm, label: string, opts: { secret?: boolean; placeholder?: string; mono?: boolean } = {}) => (
+    <div>
+      <label style={{ fontSize: 12, fontWeight: 500, color: '#565960', display: 'block', marginBottom: 5 }}>
+        {label}
+        {opts.secret && (hasSecret as any)[key] && (
+          <span style={{ marginLeft: 8, fontSize: 10.5, color: '#0F8A2F', fontWeight: 400 }}>● 已配置（留空不修改）</span>
+        )}
+      </label>
+      <input
+        type={opts.secret ? 'password' : 'text'}
+        value={form[key]}
+        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+        placeholder={opts.placeholder || (opts.secret ? '请输入（输入框内容不会被保存到浏览器）' : '')}
+        autoComplete="off"
+        style={{
+          width: '100%', boxSizing: 'border-box', height: 34, padding: '0 10px',
+          borderRadius: 4, border: '1px solid #E5E6EB', fontSize: 12.5, color: '#252931',
+          outline: 'none', fontFamily: opts.mono || opts.secret ? 'var(--font-mono)' : 'inherit',
+        }}
+      />
+    </div>
+  );
+
+  return (
+    <div style={{ border: '1px solid #E6D3FA', borderRadius: 4, background: '#FBFAFE', padding: 18, marginBottom: 18 }}>
+      <div className="flex items-center justify-between mb-3 flex-wrap" style={{ gap: 8 }}>
+        <div className="flex items-center gap-2">
+          <KeyRound size={14} style={{ color: '#B758ED' }} />
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#252931' }}>风神 BI 授权配置</span>
+          <span style={{ fontSize: 10.5, padding: '1px 8px', borderRadius: 3, fontWeight: 500, background: badge.bg, color: badge.color }}>
+            {badge.label}
+          </span>
+        </div>
+        <button
+          onClick={loadWorkspaces}
+          className="flex items-center gap-1"
+          style={{ fontSize: 11.5, color: '#B758ED', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+        >
+          <Network size={12} /> 查看工作空间
+        </button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        {field('base_url', 'API 地址 (base_url)', { placeholder: 'https://bi.example.com/openapi', mono: true })}
+        {field('workspace_id', '工作空间 ID (workspace_id)', { placeholder: 'ws_xxxxxxxx', mono: true })}
+        {field('app_id', '应用 ID (app_id)', { mono: true })}
+        {field('app_secret', '应用密钥 (app_secret)', { secret: true })}
+        {field('token', '访问令牌 (token，可与 app_id/secret 二选一)', { secret: true })}
+      </div>
+
+      <div className="flex items-center gap-3 mt-4 flex-wrap">
+        <button
+          onClick={handleSave}
+          disabled={busy !== ''}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 500,
+            padding: '7px 16px', borderRadius: 4, border: '1px solid #D9BAF7', cursor: 'pointer',
+            background: '#fff', color: '#B758ED', opacity: busy !== '' ? 0.6 : 1,
+          }}
+        >
+          {busy === 'save' ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+          保存配置
+        </button>
+        <button
+          onClick={handleTest}
+          disabled={busy !== ''}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 500,
+            padding: '7px 16px', borderRadius: 4, border: 'none', cursor: 'pointer',
+            background: '#B758ED', color: '#fff', opacity: busy !== '' ? 0.6 : 1,
+          }}
+        >
+          {busy === 'test' ? <Loader2 size={13} className="animate-spin" /> : <Plug size={13} />}
+          测试连接
+        </button>
+        <span className="flex items-center gap-1 text-[11px]" style={{ color: '#898B8F' }}>
+          <ShieldCheck size={12} /> 凭证由后端内存托管，密钥不明文回显、不写入浏览器本地存储
+        </span>
+      </div>
+
+      {msg && (
+        <div style={{
+          marginTop: 12, fontSize: 12, lineHeight: 1.7, borderRadius: 4, padding: '8px 12px',
+          background: msg.type === 'ok' ? '#F0FBF4' : msg.type === 'info' ? '#F5F9FF' : '#FFF1F0',
+          border: `1px solid ${msg.type === 'ok' ? '#C5F0D5' : msg.type === 'info' ? '#D6E6FF' : '#FFCDC8'}`,
+          color: msg.type === 'ok' ? '#1A6B33' : msg.type === 'info' ? '#1E5BB8' : '#C63838',
+        }}>
+          {msg.text}
+        </div>
+      )}
+
+      {workspaces !== null && (
+        <div style={{ marginTop: 12 }}>
+          <div className="text-[12px] font-semibold mb-1.5" style={{ color: '#252931' }}>
+            <Network size={12} style={{ display: 'inline', marginRight: 5, color: '#B758ED' }} />
+            工作空间{wsNote && <span style={{ fontWeight: 400, color: '#B25E00', marginLeft: 6 }}>{wsNote}</span>}
+          </div>
+          {workspaces.length === 0 ? (
+            <p style={{ fontSize: 12, color: '#898B8F', margin: 0 }}>{wsNote || '暂无工作空间'}</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {workspaces.map(w => (
+                <div key={w.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: '#fff', border: '1px solid #EDE3FB', borderRadius: 4 }}>
+                  <Building2 size={13} style={{ color: '#B758ED' }} />
+                  <span style={{ fontSize: 12.5, color: '#252931', fontWeight: 500 }}>{w.name}</span>
+                  <span style={{ fontSize: 11, color: '#898B8F', fontFamily: 'var(--font-mono)' }}>{w.id}</span>
+                  {w.role && <span style={{ fontSize: 10.5, color: '#B758ED', background: '#F0EBFA', padding: '1px 7px', borderRadius: 3 }}>{w.role}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

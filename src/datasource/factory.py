@@ -24,40 +24,43 @@ _REGISTRY: dict[str, type[DataSourceProvider]] = {
     "fengshenBi": FengshenBiProvider,
 }
 
-_provider_instance: "DataSourceProvider | None" = None
+# 多实例缓存：每种数据源类型各持有一个单例。
+# 这样企业 BI Provider 通过 configure() 写入的运行时凭证不会因切换数据源而丢失。
+_instances: dict[str, DataSourceProvider] = {}
 
 
 def provider_registry() -> dict[str, dict]:
-    """返回所有已注册 provider 的元信息（不实例化）。"""
+    """返回所有已注册 provider 的元信息（复用缓存实例，反映运行时配置/连接状态）。"""
     result = {}
-    for key, cls in _REGISTRY.items():
-        tmp = cls()
+    for key in _REGISTRY:
+        tmp = get_provider(key)
         result[key] = {
             "source_type": key,
             "display_name": tmp.display_name,
             "is_real": tmp.is_real,
             "is_available": tmp.is_available,
+            # 企业 BI 连接状态机（local 等无此方法时回退 real_ready/unconfigured）
+            "connection_status": getattr(tmp, "connection_status",
+                                         lambda: ("real_ready" if tmp.is_available else "unconfigured"))(),
         }
     return result
 
 
 def get_provider(source_type: str | None = None) -> DataSourceProvider:
     """
-    获取数据源 provider 实例（单例）。
+    获取数据源 provider 实例（按类型缓存的单例）。
     优先使用参数指定的类型，否则读环境变量 DATASOURCE_TYPE，默认 currentLocal。
     """
-    global _provider_instance
     st = source_type or os.environ.get("DATASOURCE_TYPE", "currentLocal")
     if st not in _REGISTRY:
         raise ValueError(
             f"未知数据源类型 '{st}'，已注册：{list(_REGISTRY.keys())}"
         )
-    if _provider_instance is None or _provider_instance.source_type != st:
-        _provider_instance = _REGISTRY[st]()
-    return _provider_instance
+    if st not in _instances:
+        _instances[st] = _REGISTRY[st]()
+    return _instances[st]
 
 
 def reset_provider():
-    """重置单例（测试用）。"""
-    global _provider_instance
-    _provider_instance = None
+    """重置所有缓存实例（测试用）。"""
+    _instances.clear()

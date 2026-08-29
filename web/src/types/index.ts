@@ -105,7 +105,7 @@ export interface Conversation {
 }
 
 // 导航页面类型
-export type PageType = 'chat' | 'chartAssistant' | 'dictionary' | 'evaluation' | 'settings' | 'semanticEditor';
+export type PageType = 'chat' | 'chartAssistant' | 'dictionary' | 'evaluation' | 'settings' | 'semanticEditor' | 'enterpriseBi';
 
 // 实验评测结果
 export interface EvaluationResult {

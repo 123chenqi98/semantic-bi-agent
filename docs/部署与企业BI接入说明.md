@@ -26,15 +26,16 @@
                                                   │
                                     ┌─────────────┼─────────────┐
                                     ▼             ▼             ▼
-                              ┌──────────┐  ┌──────────┐  ┌──────────┐
-                              │ 本地      │  │ 风神 BI   │  │  LLM API │
-                              │ SQLite   │  │ (占位Mock)│  │ (可选)    │
-                              └──────────┘  └──────────┘  └──────────┘
+                              ┌──────────┐  ┌──────────────┐  ┌──────────┐
+                              │ 本地      │  │ 风神 BI       │  │  LLM API │
+                              │ SQLite   │  │ 企业级接入层  │  │ (可选)    │
+                              │(真实可用) │  │(半真实·待联调)│  │          │
+                              └──────────┘  └──────────────┘  └──────────┘
 ```
 
 - **前端**：React 19 + Vite 构建为静态文件，由 nginx 托管
 - **后端**：Flask + gunicorn，提供 REST API 和 SSE 流式接口
-- **数据源层**：Provider/Adapter 抽象，当前支持本地 SQLite 和风神 BI（占位）
+- **数据源层**：Provider/Adapter 抽象，当前支持本地 SQLite（真实）与风神 BI（企业级接入层：授权/状态机/分阶段问数已就绪，真实 OpenAPI 端点待文档填充）
 - **反向代理**：nginx 将 `/api/*` 转发到后端，其余路径走 SPA 路由
 
 ---
@@ -201,12 +202,16 @@ docker build -f Dockerfile.frontend -t semantic-bi-frontend .
 | `LLM_TEMPERATURE` | `0` | 采样温度 |
 | `LLM_TIMEOUT` | `30` | 请求超时（秒） |
 | `LLM_MAX_RETRIES` | `2` | 最大重试次数 |
-| `FENGSHEN_BI_BASE_URL` | _(空)_ | 风神 BI API 地址（预留） |
-| `FENGSHEN_BI_APP_ID` | _(空)_ | 风神 BI 应用 ID（预留） |
-| `FENGSHEN_BI_APP_SECRET` | _(空)_ | 风神 BI 应用密钥（预留） |
-| `FENGSHEN_BI_TOKEN` | _(空)_ | 风神 BI 访问令牌（预留） |
-| `FENGSHEN_BI_WORKSPACE_ID` | _(空)_ | 风神 BI 工作空间 ID（预留） |
+| `FENGSHEN_BI_BASE_URL` | _(空)_ | 风神 BI OpenAPI 地址【真实接入必填】 |
+| `FENGSHEN_BI_WORKSPACE_ID` | _(空)_ | 风神 BI 工作空间 ID【真实接入必填】 |
+| `FENGSHEN_BI_APP_ID` | _(空)_ | 风神 BI 应用 ID（与 APP_SECRET 配对，用于换 token） |
+| `FENGSHEN_BI_APP_SECRET` | _(空)_ | 风神 BI 应用密钥（与 APP_ID 配对，二选一鉴权） |
+| `FENGSHEN_BI_TOKEN` | _(空)_ | 风神 BI 长期访问令牌（二选一鉴权，配置后优先使用） |
 | `WEB_PORT` | `80` | Docker 前端对外端口 |
+
+> 风神 BI 凭证也可在前端「系统设置 → 数据源管理 → 风神 BI 授权配置」表单中填写，
+> 由后端内存托管（密钥不明文回显、不写入浏览器 localStorage）；生产环境推荐用环境变量/密钥管理服务注入。
+> **注意**：仅填凭证尚不能真实取数，还需在 `fengshenbi_provider.py` 的 `API_ENDPOINTS` 填充真实端点（见第 10 节）。
 
 ---
 
@@ -255,76 +260,139 @@ curl http://localhost:5001/api/datasource/status
 
 - 问数（Text-to-SQL）、图表生成、指标词典等功能无需关心数据来自哪里
 - 新增数据源只需实现一个 Provider 类，上层代码零改动
-- 每个 Provider 明确标记 `is_real`（真实可用 vs 占位 Mock），不伪造接入状态
+- 每个 Provider 明确标记 `is_real`（真实可用 vs 演示/待联调），**不伪造接入状态**
+- 面向企业 BI 场景提供「授权配置 → 连通性验证 → 数据集浏览 → 需求确认 → SQL 确认 → 受控执行」的完整链路
 
-### 9.2 统一接口
+### 9.2 currentLocal 与 fengshenBi 的差异
 
-所有 Provider 必须实现以下方法：
+| 维度 | currentLocal（本地 SQLite） | fengshenBi（风神 BI 企业级接入层） |
+|------|------------------------------|-------------------------------------|
+| 定位 | 开箱即用的真实示例库 | 面向企业真实 BI 平台的接入层 |
+| 数据真实性 | **真实**（retail.db，4 表 21,064 行） | 需求识别/SQL 草案为**真实**；最终取数在未接 OpenAPI 前为**明确标注的 Mock** |
+| 授权 | 无需授权（本地文件） | 需要 base_url / 工作空间 / app_id+secret 或 token |
+| 连接状态 | 恒为 `real_ready` | 五态状态机（见 9.6） |
+| 问数方式 | 直接问数 + 分阶段问数均可 | 推荐「分阶段问数」（先确认再执行） |
+| 适用场景 | 开发、演示、评测对照 | 企业生产接入、简历展示「企业级接入能力」 |
+
+### 9.3 统一接口
+
+所有 Provider 共享基础取数接口：
 
 ```python
 class DataSourceProvider(ABC):
     @property
     def source_type(self) -> str: ...        # 类型标识，如 "fengshenBi"
-
     @property
     def display_name(self) -> str: ...       # 人类可读名称
-
     @property
-    def is_real(self) -> bool: ...           # True=真实数据, False=Mock占位
-
+    def is_real(self) -> bool: ...           # True=真实数据, False=演示/待联调
     @property
-    def is_available(self) -> bool: ...      # 当前是否可用
+    def is_available(self) -> bool: ...      # 当前凭证是否已配置
 
-    def health_check(self) -> dict: ...      # 健康检查
-    def list_datasets(self) -> list[dict]: ... # 列出数据集
-    def get_dataset_schema(self, dataset_id: str) -> dict: ... # 字段元数据
-    def preview_dataset(self, dataset_id: str, limit: int = 20) -> dict: ... # 预览
-    def run_query(self, sql: str, max_rows: int = 200) -> dict: ... # 执行SQL
+    # —— 基础取数 ——
+    def health_check(self) -> dict: ...
+    def list_datasets(self) -> list[dict]: ...
+    def get_dataset_schema(self, dataset_id: str) -> dict: ...
+    def preview_dataset(self, dataset_id: str, limit: int = 20) -> dict: ...
+    def run_query(self, sql: str, max_rows: int = 200) -> dict: ...
+    def run_semantic_query(self, question, history=None) -> dict: ...  # 预留：BI 自有语义问数
 ```
 
-### 9.3 已注册的 Provider
+面向企业 BI 的**扩展接口**（基类均提供默认实现，旧 Provider 零改动；风神 BI 已覆盖）：
 
-| source_type | 名称 | is_real | 说明 |
-|-------------|------|---------|------|
-| `currentLocal` | 本地 SQLite（零售示例库） | **True** | 4 张表、21,064 行，完整可用 |
-| `fengshenBi` | 风神 BI（占位 Mock · 待接入） | False | 接口链路已通，数据为模拟 |
+```python
+    # —— 授权与状态机 ——
+    def connection_status(self) -> str:           # 五态：unconfigured/mock/configured/verified/real_ready
+    def configure(self, config: dict) -> dict:    # 运行时写入凭证（内存托管）
+    def masked_config(self) -> dict:              # 脱敏回显（密钥显示 •••••• + 末 4 位）
+    def validate_credentials(self, config=None) -> dict:  # 「测试连接」：校验 + 真实握手
 
-### 9.4 文件结构
+    # —— 多租户 / 工作空间 ——
+    def list_workspaces(self) -> dict:
+
+    # —— 分阶段问数 ——
+    def plan_query(self, question, history=None, dataset_id=None) -> dict:   # 阶段一：需求+SQL草案（不执行）
+    def confirm_and_run(self, sql, dataset_id=None, max_rows=200) -> dict:   # 阶段二：用户确认后执行（含审计标记）
+```
+
+### 9.4 已注册的 Provider
+
+| source_type | 名称 | is_real | 连接状态 | 说明 |
+|-------------|------|---------|----------|------|
+| `currentLocal` | 本地 SQLite（零售示例库） | **True** | real_ready | 4 张表、21,064 行，完整可用 |
+| `fengshenBi` | 风神 BI（企业级接入层） | False | mock / configured | 授权、状态机、分阶段问数已就绪；真实端点待 OpenAPI 文档填充 |
+
+### 9.5 文件结构
 
 ```
 src/datasource/
-├── __init__.py              # 包入口
-├── base.py                  # DataSourceProvider 抽象基类
+├── __init__.py              # 包入口（导出 get_provider / provider_registry / reset_provider）
+├── base.py                  # DataSourceProvider 抽象基类（基础取数 + 企业 BI 扩展接口）
 ├── local_provider.py        # 本地 SQLite Provider（真实可用）
-├── fengshenbi_provider.py   # 风神 BI 占位 Provider（Mock）
-└── factory.py               # 工厂：按 DATASOURCE_TYPE 选择 Provider
+├── fengshenbi_provider.py   # 风神 BI Provider（真实接入准备版，见第 10 节）
+└── factory.py               # 工厂：按 source_type 多实例缓存 Provider
 ```
 
-### 9.5 切换数据源
+风神 BI Provider 内部分层（职责清晰，便于联调）：
 
-通过环境变量切换，无需改代码：
-
-```bash
-# 使用本地 SQLite（默认）
-DATASOURCE_TYPE=currentLocal
-
-# 使用风神 BI（当前为 Mock）
-DATASOURCE_TYPE=fengshenBi
+```
+配置读取   → _cfg() / configure()          环境变量 + 运行时配置双通道
+凭证状态机 → connection_status() / validate_credentials()
+HTTP 客户端 → _raw_request() / _fetch_token()   标准库 urllib，鉴权头/超时/错误归一化
+响应映射   → _map_dataset() / _map_schema() / _map_query_result()
+执行标准化 → run_query() / confirm_and_run()
 ```
 
-### 9.6 前端数据源管理
+### 9.6 五态连接状态机
 
-系统设置页（`/settings`）提供「数据源管理」卡片：
+风神 BI Provider 的 `connection_status()` 返回五种标准状态，前端据此渲染徽标：
 
-- 展示所有已注册 Provider，标记「真实」/「Mock」、「可用」/「未配置凭证」
-- 点击切换查看各数据源的数据集列表
-- 展开数据集可预览前 5 行数据
-- 风神 BI 的预览数据带有黄色「⚠️ Mock 数据」提示
+| 状态 | 含义 | is_real | 取数行为 |
+|------|------|---------|----------|
+| `unconfigured` | 未配置任何凭证 | False | — |
+| `mock` | 未配置凭证，运行于内置 Mock 演示 | False | 返回标注 mock 的模拟结果 |
+| `configured` | 已填凭证，但真实端点未填充/未验证 | False | 返回标注「待联调」的模拟结果 |
+| `verified` | 凭证已通过真实握手（端点齐全 + 连通） | False* | 真实取数 |
+| `real_ready` | 端点齐全且验证通过，真实可用 | **True** | 真实取数 |
 
-### 9.7 新增数据源（以接入其他 BI 为例）
+> *`verified` 与 `real_ready` 的区别：`is_real` 仅在查询主链路所需端点（datasets / dataset_schema / query）全部填充且验证通过时才为 True，杜绝「凭证有效但取数仍 Mock」的误判。
+
+### 9.7 分阶段问数流程（plan → confirm）
+
+企业 BI 问数不采用「直接问→直接出数」，而是拆为两个显式阶段，由后端 API 编排：
+
+```
+用户提问
+   │
+   ▼
+POST /api/enterprise-bi/plan   （阶段一：不执行查询）
+   │  ├─ 语义层匹配指标（match_metrics）
+   │  ├─ 识别时间范围 / 分析维度
+   │  ├─ 信息不全 → 返回 clarification_questions（澄清问题）+ assumptions（系统假设）
+   │  └─ 生成 SQL 草案（LLM 走语义 pipeline，否则题库/兜底）
+   ▼
+前端展示：命中指标 / 时间 / 维度 + 澄清问题 + SQL 草案
+   │
+   │  用户核对口径、确认 SQL
+   ▼
+POST /api/enterprise-bi/confirm （阶段二：confirmed=true 才执行）
+   │  └─ provider.confirm_and_run(sql)（带 audited 审计标记）
+   ▼
+返回：结果集 + 分析结论（key_findings）+ 图表建议（chart_suggestion）+ mock 标注
+```
+
+- 草案在服务端以 `plan_id` 缓存（内存态，重启失效），confirm 凭 `plan_id` 取回，避免前端篡改。
+- 未接真实 API 时：**需求识别与 SQL 草案为真实能力**，最终取数为明确标注的模拟数据（`mock=true` / `pending_integration=true` + `mock_note`）。
+
+### 9.8 前端界面
+
+- **「企业 BI 问数」页**（侧边栏 Building2 图标）：步骤指示器（需求确认 → SQL 确认 → 执行取数）、问题输入、澄清问题/系统假设、命中指标/时间/维度标签、SQL 草案回显、「确认 SQL 并执行」按钮、结果表格 + KPI/柱状/折线图（Recharts）+ 分析结论，Mock 结果黄色横幅明确提示。
+- **「系统设置 → 数据源管理」**：Provider 卡片切换、数据集列表与预览；选中风神 BI 时展开「风神 BI 授权配置」面板（base_url / app_id / app_secret / token / workspace_id 表单、保存配置、测试连接、工作空间查看、五态状态徽标）。
+
+### 9.9 新增数据源（以接入其他 BI 为例）
 
 1. 在 `src/datasource/` 下新建 `xxx_provider.py`
-2. 继承 `DataSourceProvider`，实现所有抽象方法
+2. 继承 `DataSourceProvider`，实现基础抽象方法；企业 BI 场景按需覆盖扩展接口
 3. 在 `factory.py` 的 `_REGISTRY` 中注册：
 
 ```python
@@ -335,88 +403,78 @@ _REGISTRY = {
 }
 ```
 
-4. 设置 `DATASOURCE_TYPE=yourBi` 即可切换
+4. 设置 `DATASOURCE_TYPE=yourBi` 或在前端通过 `?source_type=yourBi` 调用即可
 
 ---
 
 ## 10. 风神 BI 真实接入指南
 
-> **当前状态**：风神 BI Provider 为占位实现（Mock），接口链路已打通，但未调用任何真实 API。
+> **当前状态**：风神 BI Provider 已从「占位 Mock」重构为「**真实接入准备版**」。
+> 授权配置、连接状态机、统一 HTTP Client、响应 mapper、分阶段问数契约、前端 UI **均已落地**；
+> 唯一缺失的是风神 BI **真实 OpenAPI 端点路径与响应字段**（严禁伪造，代码中以 `None + TODO` 显式标注）。
 
-### 10.1 需要获取的信息
+### 10.1 能力清单：哪些已真实可用，哪些待接通
 
-接入风神 BI 真实 API 前，需要获取：
+**✅ 已真实具备（无需等文档）**
 
+- 凭证配置读取：环境变量 `FENGSHEN_BI_*` + 前端表单运行时配置双通道
+- 五态连接状态机与脱敏回显（密钥不落明文、不进浏览器持久化）
+- 统一 HTTP Client：鉴权头（Bearer token / X-App-Id / X-Workspace-Id）、超时、HTTP/网络错误归一化
+- API 响应 mapper：数据集 / Schema / 查询结果 → 统一接口格式（兼容多种字段命名）
+- 分阶段问数：需求澄清、指标/时间/维度识别、SQL 草案生成、确认执行、结果标准化、图表推荐、分析结论
+- 半真实演示链路：plan→confirm 全流程可跑通，Mock 结果明确标注
+
+**❌ 待风神 BI 官方资料填充（当前为 None + TODO，不伪造）**
+
+- 真实 API 端点路径（`API_ENDPOINTS` 7 个端点）
+- 鉴权换 token 的真实接口与字段
+- 数据集 / Schema / 预览 / SQL 代理 / 工作空间的真实请求与响应结构
+- 风神 BI 自有「语义问数」私有接口（`run_semantic_query` 已预留，返回 not_supported）
+
+### 10.2 真实接入还需你提供的资料
+
+- [ ] 《风神 BI OpenAPI / 开放平台接口文档》
 - [ ] API Base URL（`FENGSHEN_BI_BASE_URL`）
-- [ ] 应用 ID（`FENGSHEN_BI_APP_ID`）
-- [ ] 应用密钥（`FENGSHEN_BI_APP_SECRET`）或访问令牌（`FENGSHEN_BI_TOKEN`）
 - [ ] 工作空间 ID（`FENGSHEN_BI_WORKSPACE_ID`）
-- [ ] API 文档（数据集列表、Schema 查询、数据预览、SQL 查询等接口）
+- [ ] 应用 ID + 应用密钥（`FENGSHEN_BI_APP_ID` / `APP_SECRET`），或长期访问令牌（`FENGSHEN_BI_TOKEN`）
+- [ ] 鉴权方式说明（静态 token / OAuth 换 token / 签名）
+- [ ] SQL 查询代理接口是同步还是异步（异步需轮询任务 ID）
+- [ ] （可选）风神 BI 自有「智能问数/语义问数」接口文档
 
-### 10.2 需要修改的文件
+### 10.3 需要修改的位置（均在 `src/datasource/fengshenbi_provider.py`）
 
-接入时只需修改一个文件：
+| 位置 | 当前状态 | 接入时做什么 |
+|------|----------|--------------|
+| `API_ENDPOINTS` 字典 | 7 个端点全 `None` + TODO | 填入真实相对路径（auth_token / workspaces / datasets / dataset_schema / dataset_preview / query / semantic_query） |
+| `_fetch_token()` | 静态 token 直用；动态换 token 处为 TODO | 按文档调整换 token 请求体与响应字段解析 |
+| `_raw_request()` | 已实现通用请求 | 按需调整鉴权头 / 签名 / 异步轮询 |
+| `_map_dataset()` / `_map_schema()` / `_map_query_result()` | 已做常见字段兼容 | 按真实响应字段名对齐映射 |
+| `is_real` | 端点齐全 + verified 自动为 True | **无需手改**，端点填充并验证通过后自动切换 |
 
-**`src/datasource/fengshenbi_provider.py`**
+> 上层 API 路由（`app_backend.py`）、前端页面、状态机、分阶段流程**均无需改动**——这正是分层抽象的价值。
 
-| 方法 | 当前 Mock 行为 | 替换为真实实现 |
-|------|---------------|---------------|
-| `__init__` | 读取环境变量但不发起连接 | 初始化 HTTP 客户端、获取/刷新 Token |
-| `health_check` | 返回 Mock 状态 | 调用认证接口验证凭证有效性 |
-| `list_datasets` | 返回 3 个硬编码数据集 | 调用风神 BI 数据集列表 API |
-| `get_dataset_schema` | 返回硬编码字段 | 调用风神 BI 字段元数据 API |
-| `preview_dataset` | 返回随机模拟数据 | 调用风神 BI 数据预览/采样 API |
-| `run_query` | 返回 `not_implemented` | 调用风神 BI SQL 查询代理 API |
+### 10.4 接入步骤
 
-### 10.3 不需要修改的文件
+1. 在 `API_ENDPOINTS` 中填入真实端点路径。
+2. 按文档实现 `_fetch_token()`（若平台直接下发长期 token，配置 `FENGSHEN_BI_TOKEN` 即可跳过）。
+3. 在三个 `_map_*` mapper 中对齐真实响应字段。
+4. 配置凭证后在前端「测试连接」，或：
 
-- `base.py`：接口定义不变
-- `factory.py`：注册逻辑不变
-- `app_backend.py`：API 路由不变
-- 前端所有组件：API 响应格式不变
-- Docker / nginx 配置：不变
-
-### 10.4 接入步骤示例
-
-```python
-# src/datasource/fengshenbi_provider.py
-
-class FengshenBiProvider(DataSourceProvider):
-    def __init__(self):
-        # ... 读取环境变量 ...
-        self._token = self._get_token()
-
-    def _get_token(self) -> str:
-        """用 app_id + app_secret 换取 access_token。"""
-        # TODO: 替换为风神 BI 真实认证接口
-        # resp = requests.post(f"{self.base_url}/auth/token", json={...})
-        # return resp.json()["access_token"]
-        ...
-
-    def list_datasets(self):
-        # TODO: 替换为风神 BI 真实 API
-        # resp = requests.get(
-        #     f"{self.base_url}/datasets",
-        #     headers={"Authorization": f"Bearer {self._token}"},
-        #     params={"workspace_id": self.workspace_id}
-        # )
-        # return [self._map_dataset(d) for d in resp.json()["data"]]
-        ...
-
-    def run_query(self, sql, max_rows=200):
-        # TODO: 替换为风神 BI SQL 查询代理接口
-        ...
+```bash
+curl -X POST http://localhost:5001/api/enterprise-bi/connect \
+  -H "Content-Type: application/json" \
+  -d '{"base_url":"https://bi.example.com/openapi","app_id":"xxx","app_secret":"yyy","workspace_id":"ws_001"}'
 ```
+
+5. 状态变为 `verified` / `real_ready`，`is_real=true` 即接通。
 
 ### 10.5 验收标准
 
-接入完成后：
-
-1. `curl /api/datasource/status` 中 fengshenBi 的 `is_real` 仍为 `false`（由代码控制）
-2. 将 `is_real` 属性改为 `True`
-3. 前端数据源管理页切换到风神 BI，能看到真实数据集和预览数据
-4. 通过 `POST /api/datasource/query` 执行 SQL 返回真实结果
-5. Text-to-SQL 流程生成的 SQL 能通过风神 BI 执行
+1. `curl /api/enterprise-bi/status` 中 `connection_status` 为 `real_ready`、`is_real` 为 `true`
+2. `GET /api/enterprise-bi/datasets` 返回真实数据集（无 mock 标记）
+3. `GET /api/enterprise-bi/schema?dataset_id=...` 返回真实字段
+4. 「企业 BI 问数」页 plan→confirm 全链路返回**真实**结果（无黄色 Mock 横幅）
+5. 凭证在前端始终脱敏显示，刷新页面后密钥不明文回显
 
 ---
 
@@ -447,6 +505,46 @@ class FengshenBiProvider(DataSourceProvider):
 | GET | `/api/datasource/datasets/<id>/schema` | 字段 Schema |
 | GET | `/api/datasource/datasets/<id>/preview` | 数据预览（`?limit=N`） |
 | POST | `/api/datasource/query` | 执行 SQL 查询 |
+
+### 企业 BI 分阶段问数（新增）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/enterprise-bi/config` | 获取脱敏后的当前凭证配置（密钥不明文回显） |
+| POST | `/api/enterprise-bi/config` | 保存凭证配置（后端内存托管） |
+| POST | `/api/enterprise-bi/connect` | 测试连接 / 校验凭证（可携带配置一并保存后验证） |
+| GET | `/api/enterprise-bi/status` | 五态连接状态 + 健康信息 |
+| GET | `/api/enterprise-bi/workspaces` | 工作空间列表 |
+| GET | `/api/enterprise-bi/datasets` | 企业 BI 数据集列表 |
+| GET | `/api/enterprise-bi/schema?dataset_id=` | 数据集字段 Schema |
+| POST | `/api/enterprise-bi/plan` | **阶段一**：需求澄清 + 生成 SQL 草案（不执行） |
+| POST | `/api/enterprise-bi/confirm` | **阶段二**：用户确认 SQL 后执行取数 |
+
+### 企业 BI 分阶段问数示例
+
+```bash
+# 1) 查看连接状态（未配置时为 mock 态）
+curl http://localhost:5001/api/enterprise-bi/status
+
+# 2) 保存凭证（密钥仅后端内存持有）
+curl -X POST http://localhost:5001/api/enterprise-bi/config \
+  -H "Content-Type: application/json" \
+  -d '{"base_url":"https://bi.example.com/openapi","app_id":"xxx","app_secret":"yyy","workspace_id":"ws_001"}'
+
+# 3) 测试连接
+curl -X POST http://localhost:5001/api/enterprise-bi/connect \
+  -H "Content-Type: application/json" -d '{}'
+
+# 4) 阶段一：生成 SQL 草案（不执行），返回 plan_id / 澄清问题 / 草案
+curl -X POST http://localhost:5001/api/enterprise-bi/plan \
+  -H "Content-Type: application/json" \
+  -d '{"question":"上月各渠道的销售额分别是多少"}'
+
+# 5) 阶段二：确认后执行（plan_id 来自上一步）
+curl -X POST http://localhost:5001/api/enterprise-bi/confirm \
+  -H "Content-Type: application/json" \
+  -d '{"plan_id":"plan_xxxx","confirmed":true}'
+```
 
 ### 数据源查询示例
 

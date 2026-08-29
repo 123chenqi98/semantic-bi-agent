@@ -9,6 +9,8 @@
   → 仍体现语义层机制：指标匹配、时间映射、规则校验
 - 有 LLM_API_KEY 时走真实 baseline vs semantic 双 Pipeline
 """
+from __future__ import annotations
+
 import os
 import sys
 import time
@@ -985,6 +987,374 @@ def api_datasource_query():
         return jsonify(result)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ==================== 企业 BI 分阶段问数 API（需求确认 → SQL 草案 → 确认执行） ====================
+
+import uuid as _uuid
+
+# plan 阶段产物的服务端缓存：plan_id -> plan 内容（内存态，重启失效）
+_ENT_PLANS = {}
+
+# 时间信号关键词（用于需求完整性判断）
+_TIME_SIGNALS = ["上月", "本月", "下月", "昨天", "今天", "本周", "上周", "下周", "近7天", "近7日",
+                 "近30天", "近30日", "最近", "季度", "年度", "去年", "今年", "年", "月", "周", "季度",
+                 "2024", "2025", "2026", "q1", "q2", "q3", "q4", "1-", "2-", "01-", "02-"]
+# 维度信号关键词
+_DIM_SIGNALS = {
+    "渠道": ["渠道", "channel", "线上", "线下", "小程序"],
+    "品类": ["品类", "类目", "category", "商品类别"],
+    "区域": ["区域", "地区", "省份", "城市", "region"],
+    "会员等级": ["会员", "等级", "member", "银卡", "金卡", "普通"],
+    "日期": ["按天", "按日", "每天", "每日", "趋势", "dt", "日期"],
+}
+
+
+def _ent_provider(source_type=None):
+    """获取企业 BI provider（默认风神 BI）。"""
+    return _get_ds_provider(source_type or "fengshenBi")
+
+
+def _ent_detect_requirement(question):
+    """
+    需求分析：识别指标 / 时间范围 / 维度，并产出澄清问题。
+    返回 (matched_metrics, time_range, dimensions, clarification_questions, assumptions)。
+    """
+    # 指标识别（复用语义层）
+    try:
+        mm = semantic.match_metrics(question)
+    except Exception:
+        mm = []
+    matched = [{"id": (m.get("id") if isinstance(m, dict) else m),
+                "name": (semantic.metrics.get(m.get("id"), {}).get("name", m.get("id"))
+                         if isinstance(m, dict) else semantic.metrics.get(m, {}).get("name", m))}
+               for m in mm]
+
+    # 时间范围识别（复用现有启发式）
+    time_range = ""
+    try:
+        time_range = _guess_time_range(question) or ""
+    except Exception:
+        time_range = ""
+    has_time = any(sig in question for sig in _TIME_SIGNALS)
+
+    # 维度识别
+    dims = [name for name, kws in _DIM_SIGNALS.items() if any(k in question for k in kws)]
+
+    # 澄清问题
+    clarifications = []
+    assumptions = []
+    if not matched:
+        clarifications.append("没有从问题中明确识别到要查询的「指标」，请问您想分析哪个指标？（如销售额、订单量、客单价、退货率等）")
+    if not has_time and not time_range:
+        clarifications.append("未指定「时间范围」，默认按上月（2026-06）统计，是否符合预期？或请告知具体时间段。")
+        assumptions.append("时间范围默认取上月（2026-06）")
+    if not dims:
+        assumptions.append("未指定分组维度，将按整体汇总；如需按渠道/品类/区域等下钻请补充说明")
+
+    return matched, (time_range or ""), dims, clarifications, assumptions
+
+
+def _ent_dimension_sql(dim: str) -> str | None:
+    """按识别到的分组维度生成「上月」口径的维度下钻 SQL 草案（兜底用，保证草案与需求识别一致）。"""
+    where_plain = "pay_status='已支付' AND order_date BETWEEN '2026-06-01' AND '2026-06-30'"
+    where_join = "o.pay_status='已支付' AND o.order_date BETWEEN '2026-06-01' AND '2026-06-30'"
+    if dim == "渠道":
+        return ("SELECT channel AS channel,\n"
+                "       ROUND(SUM(amount), 2) AS sales_amount,\n"
+                "       COUNT(DISTINCT order_id) AS order_count\n"
+                f"FROM order_item WHERE {where_plain}\n"
+                "GROUP BY channel ORDER BY sales_amount DESC;")
+    if dim == "品类":
+        return ("SELECT p.category AS category,\n"
+                "       ROUND(SUM(o.amount), 2) AS sales_amount\n"
+                "FROM order_item o JOIN product p ON o.product_id = p.product_id\n"
+                f"WHERE {where_join}\n"
+                "GROUP BY p.category ORDER BY sales_amount DESC;")
+    if dim in ("区域", "会员等级"):
+        col = "region" if dim == "区域" else "member_level"
+        return (f"SELECT c.{col} AS {col},\n"
+                "       ROUND(SUM(o.amount), 2) AS sales_amount\n"
+                "FROM order_item o JOIN customer c ON o.customer_id = c.customer_id\n"
+                f"WHERE {where_join}\n"
+                f"GROUP BY c.{col} ORDER BY sales_amount DESC;")
+    if dim == "日期":
+        return ("SELECT order_date AS dt,\n"
+                "       ROUND(SUM(amount), 2) AS sales_amount\n"
+                f"FROM order_item WHERE {where_plain}\n"
+                "GROUP BY order_date ORDER BY dt;")
+    return None
+
+
+def _ent_build_sql_draft(question, history=None, dims=None):
+    """生成 SQL 草案（不执行）。真实 LLM 走语义 pipeline，否则用内置题库/维度兜底。"""
+    dims = dims or []
+    if real_llm_enabled and experiment_system is not None:
+        try:
+            res = experiment_system.run(question, execute=False, history=history or [])
+            sql = (res.get("generated_sql") or "").strip()
+            if sql:
+                return sql, "semantic-llm"
+        except Exception:
+            pass
+    item = _match_mock_bank(question) or _try_followup(question, history or [])
+    if item and item.get("sql"):
+        sql = item["sql"].strip()
+        # 题库命中但未分组、而问题明确要求维度下钻 → 改用维度模板，保证草案与识别一致
+        if dims and "group by" not in sql.lower():
+            for d in dims:
+                dim_sql = _ent_dimension_sql(d)
+                if dim_sql:
+                    return dim_sql, "dimension-template"
+        return sql, "preset-bank"
+    # 兜底：优先维度下钻，否则单值销售额
+    for d in dims:
+        dim_sql = _ent_dimension_sql(d)
+        if dim_sql:
+            return dim_sql, "dimension-template"
+    return ("SELECT ROUND(SUM(amount), 2) AS sales_amount\n"
+            "FROM order_item WHERE pay_status='已支付'\n"
+            "  AND order_date BETWEEN '2026-06-01' AND '2026-06-30';"), "fallback"
+
+
+def _ent_recommend_chart(columns, rows):
+    """根据结果列/行特征推荐图表类型。"""
+    if not columns or not rows:
+        return {"type": "table", "reason": "无结果数据，使用表格展示"}
+    if len(rows) == 1 and len(columns) == 1:
+        return {"type": "kpi", "reason": "单值结果，适合指标卡（KPI）展示"}
+    # 粗判：列名含时间/日期 → 折线；否则维度+度量 → 柱状
+    time_like = any(k in columns[0].lower() for k in ["dt", "date", "day", "月", "日", "时间", "日期"])
+    if time_like and len(rows) >= 2:
+        return {"type": "line", "xField": columns[0],
+                "reason": f"首列为时间维度（{columns[0]}），适合折线图展示趋势"}
+    if len(columns) >= 2 and len(rows) <= 30:
+        return {"type": "bar", "xField": columns[0],
+                "reason": f"按「{columns[0]}」维度分组的汇总结果，适合柱状图对比"}
+    return {"type": "table", "reason": "结果列较多或行数较大，使用表格展示更清晰"}
+
+
+def _ent_summarize(question, columns, rows, mock=False):
+    """生成简明分析结论。"""
+    findings = []
+    if not rows:
+        return ["查询已执行，但未返回数据行。"]
+    if len(rows) == 1:
+        for i, c in enumerate(columns):
+            findings.append(f"📌 {c} = {rows[0][i]}")
+    else:
+        findings.append(f"📌 返回 {len(rows)} 行 × {len(columns)} 列，列顺序：{' → '.join(columns)}")
+        # 简单 Top 洞察：找第一个数值列的最大值行
+        try:
+            val_idx = None
+            for i, c in enumerate(columns):
+                if all(isinstance(r[i], (int, float)) for r in rows if i < len(r)):
+                    val_idx = i
+                    break
+            if val_idx is not None and len(columns) >= 2:
+                top = max(rows, key=lambda r: r[val_idx] if isinstance(r[val_idx], (int, float)) else -1)
+                findings.append(f"📈 其中「{top[0]}」的 {columns[val_idx]} 最高，为 {top[val_idx]}")
+        except Exception:
+            pass
+    if mock:
+        findings.append("⚠️ 以上结果为 Mock 演示数据（风神 BI 真实 API 待接入）；需求识别与 SQL 草案为真实生成。")
+    return findings
+
+
+@app.route("/api/enterprise-bi/config", methods=["POST"])
+def api_ent_config():
+    """保存企业 BI 凭证配置（后端内存托管，密钥不落前端持久化）。"""
+    body = request.get_json(silent=True) or {}
+    provider = _ent_provider(body.get("source_type"))
+    if not hasattr(provider, "configure"):
+        return jsonify({"ok": False, "message": "该数据源不支持运行时配置"}), 400
+    # 仅透传请求中真实给出的字段：缺失/留空的密钥键不伪造成 None，
+    # 否则 configure() 会把显式 None 解读为「清空」，误删已保存的凭证（留空=不修改）。
+    _ent_fields = ("base_url", "app_id", "app_secret", "token", "workspace_id")
+    payload = {k: body[k] for k in _ent_fields if body.get(k) is not None}
+    result = provider.configure(payload)
+    return jsonify(result)
+
+
+@app.route("/api/enterprise-bi/config", methods=["GET"])
+def api_ent_config_get():
+    """获取脱敏后的当前配置（密钥不回显明文）。"""
+    provider = _ent_provider(request.args.get("source_type"))
+    return jsonify({
+        "ok": True,
+        "source_type": provider.source_type,
+        "config": getattr(provider, "masked_config", lambda: {})(),
+        "connection_status": getattr(provider, "connection_status", lambda: "unknown")(),
+    })
+
+
+@app.route("/api/enterprise-bi/connect", methods=["POST"])
+def api_ent_connect():
+    """测试连接：校验凭证 / 连通性。body 可携带配置一并保存后验证。"""
+    body = request.get_json(silent=True) or {}
+    provider = _ent_provider(body.get("source_type"))
+    # 仅收集非空字段传给 validate → configure；缺失的密钥键（如前端留空的 app_secret）
+    # 保持后端已有值，绝不能因「测试连接」而把已保存凭证冲掉。
+    _ent_fields = ("base_url", "app_id", "app_secret", "token", "workspace_id")
+    present = {k: body[k] for k in _ent_fields if body.get(k) not in (None, "")}
+    config = present if present else None
+    result = provider.validate_credentials(config)
+    result["source_type"] = provider.source_type
+    return jsonify(result)
+
+
+@app.route("/api/enterprise-bi/status", methods=["GET"])
+def api_ent_status():
+    """企业 BI 详细连接状态（五态状态机 + 健康信息）。"""
+    provider = _ent_provider(request.args.get("source_type"))
+    return jsonify(provider.health_check())
+
+
+@app.route("/api/enterprise-bi/workspaces", methods=["GET"])
+def api_ent_workspaces():
+    """列出工作空间。"""
+    provider = _ent_provider(request.args.get("source_type"))
+    return jsonify(provider.list_workspaces())
+
+
+@app.route("/api/enterprise-bi/datasets", methods=["GET"])
+def api_ent_datasets():
+    """企业 BI 数据集列表。"""
+    provider = _ent_provider(request.args.get("source_type"))
+    try:
+        return jsonify({"success": True, "source_type": provider.source_type,
+                        "is_real": provider.is_real, "datasets": provider.list_datasets()})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/enterprise-bi/schema", methods=["GET"])
+def api_ent_schema():
+    """企业 BI 数据集字段 Schema。"""
+    dataset_id = request.args.get("dataset_id", "")
+    provider = _ent_provider(request.args.get("source_type"))
+    try:
+        return jsonify(provider.get_dataset_schema(dataset_id))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/enterprise-bi/plan", methods=["POST"])
+def api_ent_plan():
+    """
+    【阶段一】需求确认 + SQL 草案（不执行查询）。
+    入参: {question, history?, dataset_id?, source_type?}
+    出参: {plan_id, stage, needs_clarification, clarification_questions, assumptions,
+           sql_draft, matched_metrics, time_range, dimensions, dataset_id, chart_hint}
+    """
+    body = request.get_json(silent=True) or {}
+    question = (body.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "问题不能为空"}), 400
+    history = body.get("history") or []
+    dataset_id = body.get("dataset_id")
+    provider = _ent_provider(body.get("source_type"))
+
+    matched, time_range, dims, clarifications, assumptions = _ent_detect_requirement(question)
+    sql_draft, sql_source = _ent_build_sql_draft(question, history, dims)
+
+    plan_id = "plan_" + _uuid.uuid4().hex[:12]
+    plan = {
+        "plan_id": plan_id,
+        "question": question,
+        "history": history,
+        "dataset_id": dataset_id,
+        "source_type": provider.source_type,
+        "sql_draft": sql_draft,
+        "sql_source": sql_source,
+        "matched_metrics": matched,
+        "time_range": time_range,
+        "dimensions": dims,
+        "clarification_questions": clarifications,
+        "assumptions": assumptions,
+        "created_at": time.time(),
+    }
+    _ENT_PLANS[plan_id] = plan
+
+    return jsonify({
+        "success": True,
+        "stage": "plan",
+        "plan_id": plan_id,
+        "needs_clarification": len(clarifications) > 0,
+        "clarification_questions": clarifications,
+        "assumptions": assumptions,
+        "question": question,
+        "sql_draft": sql_draft,
+        "sql_source": sql_source,
+        "matched_metrics": matched,
+        "time_range": time_range,
+        "dimensions": dims,
+        "dataset_id": dataset_id,
+        "connection_status": getattr(provider, "connection_status", lambda: "unknown")(),
+        "is_real": provider.is_real,
+    })
+
+
+@app.route("/api/enterprise-bi/confirm", methods=["POST"])
+def api_ent_confirm():
+    """
+    【阶段二】用户确认 SQL 后执行查询。
+    入参: {plan_id? 或 sql, confirmed, dataset_id?, source_type?}
+    出参: {stage:'execute', result, summary, chart_suggestion, ...}
+    """
+    body = request.get_json(silent=True) or {}
+    plan_id = body.get("plan_id")
+    plan = _ENT_PLANS.get(plan_id) if plan_id else None
+    if plan_id and not plan:
+        return jsonify({"error": "plan 已过期或不存在，请重新生成 SQL 草案"}), 400
+
+    sql = (body.get("sql") or (plan or {}).get("sql_draft") or "").strip()
+    if not sql:
+        return jsonify({"error": "缺少待执行的 SQL"}), 400
+    if not body.get("confirmed", False):
+        return jsonify({"error": "请先确认 SQL 草案（confirmed=true）"}), 400
+
+    source_type = body.get("source_type") or (plan or {}).get("source_type") or "fengshenBi"
+    dataset_id = body.get("dataset_id") or (plan or {}).get("dataset_id")
+    question = (plan or {}).get("question") or body.get("question") or ""
+    provider = _ent_provider(source_type)
+
+    t0 = time.time()
+    exec_res = provider.confirm_and_run(sql, dataset_id=dataset_id, max_rows=200)
+    elapsed = round((time.time() - t0) * 1000, 1)
+
+    columns = exec_res.get("columns", []) if exec_res.get("success") else []
+    rows = exec_res.get("rows", []) if exec_res.get("success") else []
+    chart = _ent_recommend_chart(columns, rows) if exec_res.get("success") else {"type": "table", "reason": "查询失败"}
+    findings = _ent_summarize(question, columns, rows, mock=bool(exec_res.get("mock"))) if exec_res.get("success") else []
+
+    return jsonify({
+        "success": bool(exec_res.get("success")),
+        "stage": "execute",
+        "plan_id": plan_id,
+        "question": question,
+        "sql": sql,
+        "dataset_id": dataset_id,
+        "source_type": provider.source_type,
+        "is_real": provider.is_real,
+        "mock": bool(exec_res.get("mock")),
+        "mock_note": exec_res.get("mock_note", ""),
+        "pending_integration": bool(exec_res.get("pending_integration")),
+        "audited": bool(exec_res.get("audited")),
+        "result": {
+            "columns": columns,
+            "rows": rows,
+            "rowCount": len(rows),
+            "totalCount": exec_res.get("row_count", len(rows)),
+            "success": bool(exec_res.get("success")),
+            "error": exec_res.get("error"),
+            "executionTimeMs": exec_res.get("elapsed_ms", elapsed),
+        },
+        "summary": {"key_findings": findings},
+        "chart_suggestion": chart,
+        "matched_metrics": (plan or {}).get("matched_metrics", []),
+        "time_range": (plan or {}).get("time_range", ""),
+    })
 
 
 # ---------- 生产环境：托管前端静态文件（Render / 单机部署） ----------

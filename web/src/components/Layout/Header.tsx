@@ -14,10 +14,12 @@ export default function Header({ onToggleSidebar }: HeaderProps) {
     dictionary: { title: '指标语义词典', desc: '维护指标定义、口径规则与时间语义映射' },
     evaluation: { title: '实验评测中心', desc: '基线组 vs 实验组对照实验结果与逐题明细' },
     semanticEditor: { title: '语义层管理', desc: '可视化编辑指标定义、SQL 模板、同义词与口径规则（localStorage 持久化）' },
+    enterpriseBi: { title: '企业 BI 问数', desc: '连接企业 BI（风神 BI）：需求澄清 → SQL 草案确认 → 执行取数与图表分析' },
     settings: { title: '系统设置', desc: '项目信息、技术栈与模型配置' },
   };
 
-  const meta = pageMeta[state.currentPage];
+  // 兜底：未配置标题的页面类型不再因 meta 为 undefined 而整页白屏
+  const meta = pageMeta[state.currentPage] || { title: '' };
   const isChat = state.currentPage === 'chat';
 
   return (

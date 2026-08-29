@@ -8,6 +8,7 @@ import DictionaryPage from './pages/DictionaryPage';
 import EvaluationPage from './pages/EvaluationPage';
 import SettingsPage from './pages/SettingsPage';
 import SemanticEditorPage from './pages/SemanticEditorPage';
+import EnterpriseBiPage from './pages/EnterpriseBiPage';
 
 function AppContent() {
   const { state } = useApp();
@@ -16,6 +17,7 @@ function AppContent() {
   const renderPage = () => {
     switch (state.currentPage) {
       case 'chat': return <ChatPage />;
+      case 'enterpriseBi': return <EnterpriseBiPage />;
       case 'chartAssistant': return <ChartAssistantPage />;
       case 'dictionary': return <DictionaryPage />;
       case 'evaluation': return <EvaluationPage />;

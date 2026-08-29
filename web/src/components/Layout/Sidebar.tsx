@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { MessageSquare, BookOpen, FlaskConical, Settings, Plus, Trash2, ChevronDown, ExternalLink, BarChart3, SlidersHorizontal } from 'lucide-react';
+import { MessageSquare, BookOpen, FlaskConical, Settings, Plus, Trash2, ChevronDown, ExternalLink, BarChart3, SlidersHorizontal, Building2 } from 'lucide-react';
 import { useApp } from '../../store/ChatContext';
 import type { PageType } from '../../types';
 
 const navItems: { id: PageType; label: string; icon: React.ReactNode }[] = [
   { id: 'chat', label: 'AI 对话', icon: <MessageSquare size={16} /> },
+  { id: 'enterpriseBi', label: '企业 BI 问数', icon: <Building2 size={16} /> },
   { id: 'chartAssistant', label: '图表生成', icon: <BarChart3 size={16} /> },
   { id: 'dictionary', label: '指标词典', icon: <BookOpen size={16} /> },
   { id: 'semanticEditor', label: '语义层管理', icon: <SlidersHorizontal size={16} /> },
