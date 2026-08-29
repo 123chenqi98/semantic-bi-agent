@@ -413,74 +413,133 @@ _REGISTRY = {
 
 ---
 
-## 10. 风神 BI 真实接入指南
+## 10. 风神 BI 真实接入指南（OpenAPI vs MCP）
 
-> **当前状态**：风神 BI Provider 已从「占位 Mock」重构为「**真实接入准备版**」。
-> 授权配置、连接状态机、统一 HTTP Client、响应 mapper、分阶段问数契约、前端 UI **均已落地**；
-> 唯一缺失的是风神 BI **真实 OpenAPI 端点路径与响应字段**（严禁伪造，代码中以 `None + TODO` 显式标注）。
+> **结论先行**：风神 BI 有两类开放接口，用途完全不同，切勿混用——
+> - **OpenAPI（REST）**：面向**仪表盘嵌入**与**权限/资源治理**（用户组、资源授权、行列权限、角色、审批流、资源组、分析主题、数据集标签、仪表盘/报表列表）。**它不含任何「执行 SQL / 查询数据集数据 / 取数」端点。**
+> - **MCP 服务（标准 MCP 协议，Model Context Protocol）**：才是真正的「**取数**」通道，通过 3 个数据集工具暴露查询能力。
+>
+> 本系统「企业 BI 问数」的**取数主链路对接 MCP**（已把工具契约、SQL 方言、鉴权、网关适配固化进代码）；OpenAPI 仅保留占位，供未来嵌入/治理场景扩展。
 
-### 10.1 能力清单：哪些已真实可用，哪些待接通
+### 10.1 风神 MCP 工具契约（已固化进代码，非伪造）
 
-**✅ 已真实具备（无需等文档）**
+代码位置：[fengshenbi_provider.py](file:///Users/bytedance/Desktop/graduation%20project/src/datasource/fengshenbi_provider.py) 中的 `MCP_TOOLS` 常量。
 
-- 凭证配置读取：环境变量 `FENGSHEN_BI_*` + 前端表单运行时配置双通道
-- 五态连接状态机与脱敏回显（密钥不落明文、不进浏览器持久化）
-- 统一 HTTP Client：鉴权头（Bearer token / X-App-Id / X-Workspace-Id）、超时、HTTP/网络错误归一化
-- API 响应 mapper：数据集 / Schema / 查询结果 → 统一接口格式（兼容多种字段命名）
-- 分阶段问数：需求澄清、指标/时间/维度识别、SQL 草案生成、确认执行、结果标准化、图表推荐、分析结论
-- 半真实演示链路：plan→confirm 全流程可跑通，Mock 结果明确标注
+| 本系统能力 | MCP 工具名 | 入参 | 说明 |
+|------------|-----------|------|------|
+| 数据集列表 | `get_data_set_by_appid` | `appId`, `Authorization` | 按项目 ID + 用户 JWT，返回该用户**有权限**的数据集列表 |
+| 字段 Schema | `get_schema` | `dataset_id`, `Authorization` | 返回字段元数据，含 `descr`(口径)、`isAggregated`(是否已聚合)、`isPartitionField`(是否分区字段) |
+| SQL 取数 | `query_data_by_sql` | `dataSetId`, `sql`, `Authorization` | 在指定数据集上执行 SQL 返回结果集 |
 
-**❌ 待风神 BI 官方资料填充（当前为 None + TODO，不伪造）**
+> MCP **没有**独立的「自然语言问数」工具——NL→SQL 由本系统的 Agent/LLM 完成（这正是本项目语义层 Text-to-SQL 的价值），MCP 只负责执行。
 
-- 真实 API 端点路径（`API_ENDPOINTS` 7 个端点）
-- 鉴权换 token 的真实接口与字段
-- 数据集 / Schema / 预览 / SQL 代理 / 工作空间的真实请求与响应结构
-- 风神 BI 自有「语义问数」私有接口（`run_semantic_query` 已预留，返回 not_supported）
+### 10.2 MCP SQL 书写规范（`_to_aeolus_sql()` 已自动转译）
 
-### 10.2 真实接入还需你提供的资料
+风神 MCP 的 SQL 不是普通表名/列名，而是用 **ID 占位符**：
 
-- [ ] 《风神 BI OpenAPI / 开放平台接口文档》
-- [ ] API Base URL（`FENGSHEN_BI_BASE_URL`）
-- [ ] 工作空间 ID（`FENGSHEN_BI_WORKSPACE_ID`）
-- [ ] 应用 ID + 应用密钥（`FENGSHEN_BI_APP_ID` / `APP_SECRET`），或长期访问令牌（`FENGSHEN_BI_TOKEN`）
-- [ ] 鉴权方式说明（静态 token / OAuth 换 token / 签名）
-- [ ] SQL 查询代理接口是同步还是异步（异步需轮询任务 ID）
-- [ ] （可选）风神 BI 自有「智能问数/语义问数」接口文档
+- **表名**：`FROM` 后写 `` `[数据集ID]` ``，例：`` from `[293910]` ``
+- **列名**：字段写 `` `[列ID]` ``，例：`` select `[1586871766173]` from `[293910]` ``
+- **分区字段强制筛选**：凡 `isPartitionField=1` 的字段**必须**在 `WHERE` 中筛选，否则服务端拒绝执行；缺省时自动注入 `` `[分区字段ID]`='${last_date}' ``（多个分区字段都要筛）。日期字段优先匹配用户输入同名，找不到再匹配 `pdate`。
+- **已聚合字段**：`isAggregated=1` 的字段不要再套 `SUM/COUNT` 等聚合函数。
 
-### 10.3 需要修改的位置（均在 `src/datasource/fengshenbi_provider.py`）
+转译由 [_to_aeolus_sql](file:///Users/bytedance/Desktop/graduation%20project/src/datasource/fengshenbi_provider.py) 在执行前自动完成（表名→`[数据集ID]`、列名→`[列ID]`、分区字段补 `WHERE`），转译后的 SQL 会以 `transpiled_sql` 回传，便于审计与答辩展示。
 
-| 位置 | 当前状态 | 接入时做什么 |
-|------|----------|--------------|
-| `API_ENDPOINTS` 字典 | 7 个端点全 `None` + TODO | 填入真实相对路径（auth_token / workspaces / datasets / dataset_schema / dataset_preview / query / semantic_query） |
-| `_fetch_token()` | 静态 token 直用；动态换 token 处为 TODO | 按文档调整换 token 请求体与响应字段解析 |
-| `_raw_request()` | 已实现通用请求 | 按需调整鉴权头 / 签名 / 异步轮询 |
-| `_map_dataset()` / `_map_schema()` / `_map_query_result()` | 已做常见字段兼容 | 按真实响应字段名对齐映射 |
-| `is_real` | 端点齐全 + verified 自动为 True | **无需手改**，端点填充并验证通过后自动切换 |
+### 10.3 鉴权与凭证
 
-> 上层 API 路由（`app_backend.py`）、前端页面、状态机、分阶段流程**均无需改动**——这正是分层抽象的价值。
+| 凭证 | 环境变量 | 来源 / 说明 |
+|------|----------|-------------|
+| 项目 ID（`appId`） | `FENGSHEN_BI_WORKSPACE_ID`（回退 `APP_ID`） | 风神项目空间 ID；`get_data_set_by_appid` 入参 |
+| 用户 JWT | `FENGSHEN_BI_USER_JWT` | MCP 的 `Authorization` 入参，**按该用户的数据权限**返回结果 |
+| 应用凭证 | `FENGSHEN_BI_CLIENT_ID` / `FENGSHEN_BI_CLIENT_SECRET` | 开发者后台（CN）申请：`https://data.bytedance.net/aeolus#/developer/console/certification` |
+| sophon api_key | `FENGSHEN_BI_SOPHON_API_KEY` | 内网 LLM/MCP 网关鉴权：`https://sophon-ai.bytedance.net/paas/token` |
+| MCP 网关 | `FENGSHEN_BI_MCP_GATEWAY_URL` | 公网/跨网部署时的 MCP over HTTP(S) 网关地址 |
 
-### 10.4 接入步骤
+> 安全约束不变：所有密钥仅由**后端进程内存托管**，前端只脱敏回显、不持久化、不进 git。
 
-1. 在 `API_ENDPOINTS` 中填入真实端点路径。
-2. 按文档实现 `_fetch_token()`（若平台直接下发长期 token，配置 `FENGSHEN_BI_TOKEN` 即可跳过）。
-3. 在三个 `_map_*` mapper 中对齐真实响应字段。
-4. 配置凭证后在前端「测试连接」，或：
+### 10.4 四个硬性前提（限制，务必知晓）
+
+1. **邀测试用制**：风神 MCP 目前为邀测阶段，需填飞书问卷登记，每周二批量开通、飞书通知。
+   登记表：`https://bytedance.larkoffice.com/share/base/form/shrcnV2XPypCnz1jEAbmtoPXMCz`
+2. **仅内网可达**：官方接入方式是字节内网基建 `byted_mcp_client_with_server_psm(['data.aeolus.data_set_query'], region='cn')` + sophon api_key。**公网阿里云 ECS 无法直连**内网 PSM。
+3. **按用户鉴权**：除 clientId/clientSecret 外，每次取数都要传**用户 JWT**，按该用户数据权限返回。
+4. **限流与区域**：QPM ≤ 3（每分钟最多 3 次，代码已在 `_mcp_throttle()` 做进程内节流）、仅中国区、大表超资源会失败；连接超时 10s、请求超时 600s。
+
+### 10.5 两种部署形态
+
+**形态 A —— 内网 / 堡垒机 / VPN（官方 PSM 方式）**
+在能访问字节内网的机器运行，使用 `byted_mcp_client` 走 PSM 服务发现。代码接入点为 `_call_mcp_via_psm()`（当前显式抛出"需内网 SDK"引导，不伪造导入）。填入内网 SDK 调用即可，上层逻辑无需改动。
+
+**形态 B —— 公网 ECS / 跨网（HTTP 网关方式，推荐用于本项目演示）**
+在内网部署一个把 MCP 暴露为 HTTPS 的 **MCP over HTTP 网关**（标准 MCP Streamable HTTP / JSON-RPC），然后配置 `FENGSHEN_BI_MCP_GATEWAY_URL`。Provider 用**标准库 urllib** 直接发起 MCP `tools/call` JSON-RPC（无需任何第三方依赖），响应兼容普通 JSON 与 SSE 流。
+
+> 未配置网关且非内网环境时：凭证可保存、状态为「**已配置 · 待内网联调**」，取数**回退明确标注的 Mock**，绝不伪造连通。这保证了公网 ECS 演示链路始终可用且诚实。
+
+### 10.6 配置项一览（环境变量 / 前端表单均可）
+
+| 变量 | 用途 | 取数是否必填 |
+|------|------|--------------|
+| `FENGSHEN_BI_WORKSPACE_ID` | 项目 ID（MCP `appId`） | ✅ |
+| `FENGSHEN_BI_USER_JWT` | 用户 JWT（`Authorization`） | ✅（或用 client 凭证换） |
+| `FENGSHEN_BI_CLIENT_ID` / `CLIENT_SECRET` | 开发者后台应用凭证 | JWT 的替代/补充 |
+| `FENGSHEN_BI_SOPHON_API_KEY` | 内网网关 sophon key | 内网形态需要 |
+| `FENGSHEN_BI_MCP_GATEWAY_URL` | MCP over HTTP 网关 | 公网/跨网形态必填 |
+| `FENGSHEN_BI_MCP_PSM` / `MCP_REGION` | PSM/区域，默认 `data.aeolus.data_set_query` / `cn` | 一般无需改 |
+| `FENGSHEN_BI_BASE_URL` / `APP_ID` / `APP_SECRET` / `TOKEN` | OpenAPI 嵌入/治理用 | 取数非必需 |
+
+### 10.7 联调时可能需要微调的位置
+
+| 位置 | 现状 | 联调时做什么 |
+|------|------|--------------|
+| `MCP_TOOLS` | ✅ 工具名/入参已按文档填实 | 一般无需改 |
+| `_to_aeolus_sql()` | ✅ 表名/列名/分区转译已实现 | 按真实 SQL 方言边界补充（如多表 JOIN） |
+| `_call_mcp_via_gateway()` | 已实现标准 MCP JSON-RPC | 按网关要求补 `initialize` 握手 / 鉴权头名 |
+| `_call_mcp_via_psm()` | 显式引导（不伪造） | 在内网用 `byted_mcp_client` 实现真实调用 |
+| `_map_schema()` | 已兼容 `descr/isAggregated/isPartitionField` 与多种字段 ID 命名 | 按真实响应键名对齐字段 ID / 分区标记 |
+| `is_real` / `_mcp_ready()` | ✅ 自动判定 | 无需手改，网关+凭证就绪即 `real_ready` |
+
+> 上层 API 路由（`app_backend.py`）、前端页面、五态状态机、plan→confirm 分阶段流程**均无需改动**。
+
+### 10.8 接入步骤（Checklist）
+
+1. 提交飞书问卷申请风神 MCP 试用，等待开通（每周二批量）。
+2. 在开发者后台申请 `clientId` / `clientSecret`；准备一个有权限的**用户 JWT**；内网形态再申请 sophon api_key。
+3. 选择部署形态：内网机器（形态 A）或部署 MCP HTTP 网关（形态 B）。
+4. 配置环境变量（或前端「系统设置 → 风神 BI」表单）：项目 ID、用户 JWT（或 client 凭证）、网关地址。
+5. 测试连接：
 
 ```bash
+# MCP 取数凭证示例（保存 + 测试连接）
 curl -X POST http://localhost:5001/api/enterprise-bi/connect \
   -H "Content-Type: application/json" \
-  -d '{"base_url":"https://bi.example.com/openapi","app_id":"xxx","app_secret":"yyy","workspace_id":"ws_001"}'
+  -d '{"workspace_id":"293910","user_jwt":"<用户JWT>","client_id":"<cid>","client_secret":"<csec>","mcp_gateway_url":"https://<你的MCP网关>"}'
 ```
 
-5. 状态变为 `verified` / `real_ready`，`is_real=true` 即接通。
+6. 状态变为 `real_ready`、`is_real=true` 即接通；此后 plan→confirm 返回**真实**结果。
 
-### 10.5 验收标准
+### 10.9 已从现有仪表盘链接确认的信息
 
-1. `curl /api/enterprise-bi/status` 中 `connection_status` 为 `real_ready`、`is_real` 为 `true`
+用户已提供可访问的风神仪表盘链接：
+
+```text
+https://data.bytedance.net/aeolus/pages/dashboard/1851618?appId=1000821&sheetId=2681754
+```
+
+| 项 | 已确认值 | 说明 |
+|----|----------|------|
+| 站点 Origin | `https://data.bytedance.net` | 风神站点来源（OpenAPI 域名参考） |
+| `appId` | `1000821` | 可作项目 ID（MCP `appId`）的联调核对参考 |
+| `sheetId` / `dashboard_id` | `2681754` / `1851618` | 关联对象 ID，留档排查用 |
+
+> 注意：前台页面参数 ≠ 接口契约。`clientSecret`、`user_jwt`、MCP 网关地址、真实字段 ID 仍须通过申请/联调获得，代码中不做臆造。
+
+### 10.10 验收标准
+
+1. `curl /api/enterprise-bi/status` 中 `connection_status` 为 `real_ready`、`is_real` 为 `true`、`details.channel` 为 `mcp`
 2. `GET /api/enterprise-bi/datasets` 返回真实数据集（无 mock 标记）
-3. `GET /api/enterprise-bi/schema?dataset_id=...` 返回真实字段
-4. 「企业 BI 问数」页 plan→confirm 全链路返回**真实**结果（无黄色 Mock 横幅）
+3. `GET /api/enterprise-bi/schema?dataset_id=...` 返回真实字段（含字段 ID / 分区标记）
+4. 「企业 BI 问数」页 plan→confirm 返回**真实**结果（无黄色 Mock 横幅），结果中可见转译后的 `transpiled_sql`
 5. 凭证在前端始终脱敏显示，刷新页面后密钥不明文回显
+6. 未接通环境（如公网 ECS 无网关）下，状态诚实显示「待内网联调」，取数回退 Mock 且不报错
 
 ---
 

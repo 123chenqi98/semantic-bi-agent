@@ -1170,7 +1170,9 @@ def api_ent_config():
         return jsonify({"ok": False, "message": "该数据源不支持运行时配置"}), 400
     # 仅透传请求中真实给出的字段：缺失/留空的密钥键不伪造成 None，
     # 否则 configure() 会把显式 None 解读为「清空」，误删已保存的凭证（留空=不修改）。
-    _ent_fields = ("base_url", "app_id", "app_secret", "token", "workspace_id")
+    _ent_fields = ("base_url", "app_id", "app_secret", "token", "workspace_id",
+                   "client_id", "client_secret", "user_jwt", "sophon_api_key",
+                   "mcp_psm", "mcp_region", "mcp_gateway_url")
     payload = {k: body[k] for k in _ent_fields if body.get(k) is not None}
     result = provider.configure(payload)
     return jsonify(result)
@@ -1195,7 +1197,9 @@ def api_ent_connect():
     provider = _ent_provider(body.get("source_type"))
     # 仅收集非空字段传给 validate → configure；缺失的密钥键（如前端留空的 app_secret）
     # 保持后端已有值，绝不能因「测试连接」而把已保存凭证冲掉。
-    _ent_fields = ("base_url", "app_id", "app_secret", "token", "workspace_id")
+    _ent_fields = ("base_url", "app_id", "app_secret", "token", "workspace_id",
+                   "client_id", "client_secret", "user_jwt", "sophon_api_key",
+                   "mcp_psm", "mcp_region", "mcp_gateway_url")
     present = {k: body[k] for k in _ent_fields if body.get(k) not in (None, "")}
     config = present if present else None
     result = provider.validate_credentials(config)
