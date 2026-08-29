@@ -21,7 +21,8 @@
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
 │   浏览器     │────▶│  nginx :80   │────▶│  Flask :5001    │
-│  (React SPA) │     │  (静态+代理)  │     │  (gunicorn×4)   │
+│  (React SPA) │     │  (静态+代理)  │     │ gunicorn 1进程  │
+│              │     │              │     │  ×4线程(gthread)│
 └─────────────┘     └──────────────┘     └────────┬────────┘
                                                   │
                                     ┌─────────────┼─────────────┐
@@ -78,9 +79,9 @@ npm run dev
 # 1. 构建前端
 cd web && npm run build && cd ..
 
-# 2. 用 gunicorn 启动后端
+# 2. 用 gunicorn 启动后端（企业 BI 状态在进程内内存，务必单 worker，用多线程提供并发）
 pip install gunicorn
-gunicorn -w 4 -b 0.0.0.0:5001 wsgi:app --timeout 120
+gunicorn -w 1 -k gthread --threads 4 -b 0.0.0.0:5001 wsgi:app --timeout 120
 
 # 3. 用 nginx 或 vite preview 托管前端
 cd web && npx vite preview --port 4173
@@ -117,7 +118,12 @@ After=network.target
 User=www-data
 WorkingDirectory=/opt/semantic-bi-agent
 EnvironmentFile=/opt/semantic-bi-agent/.env
-ExecStart=/opt/semantic-bi-agent/venv/bin/gunicorn -w 4 -b 127.0.0.1:5001 wsgi:app --timeout 120
+# 注意：企业 BI 的 plan 缓存与运行时凭证保存在「进程内内存」中（演示版安全设计，
+# 密钥不落盘）。因此 gunicorn 必须只开 1 个 worker 进程，否则多进程间内存不共享，
+# 会出现「plan 已过期」「凭证保存后另一进程读不到」等随机故障。
+# 用 gthread 多线程在同一进程内提供并发（LLM/HTTP 为 IO 密集型，线程足够），
+# gthread 为 gunicorn 内置 worker，无需额外安装。
+ExecStart=/opt/semantic-bi-agent/venv/bin/gunicorn -w 1 -k gthread --threads 4 -b 127.0.0.1:5001 wsgi:app --timeout 120
 Restart=always
 
 [Install]
