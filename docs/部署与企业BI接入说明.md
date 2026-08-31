@@ -36,7 +36,7 @@
 
 - **前端**：React 19 + Vite 构建为静态文件，由 nginx 托管
 - **后端**：Flask + gunicorn，提供 REST API 和 SSE 流式接口
-- **数据源层**：Provider/Adapter 抽象，当前支持本地 SQLite（真实）与风神 BI（企业级接入层：授权/状态机/分阶段问数已就绪，真实 OpenAPI 端点待文档填充）
+- **数据源层**：Provider/Adapter 抽象，当前支持本地 SQLite（真实）与风神 BI（企业级接入层：授权/状态机/分阶段问数已就绪；MCP SSE 传输与 JWT 换取已在内网实测打通，真实取数待邀测白名单开通，详见第 10 节）
 - **反向代理**：nginx 将 `/api/*` 转发到后端，其余路径走 SPA 路由
 
 ---
@@ -217,7 +217,7 @@ docker build -f Dockerfile.frontend -t semantic-bi-frontend .
 
 > 风神 BI 凭证也可在前端「系统设置 → 数据源管理 → 风神 BI 授权配置」表单中填写，
 > 由后端内存托管（密钥不明文回显、不写入浏览器 localStorage）；生产环境推荐用环境变量/密钥管理服务注入。
-> **注意**：仅填凭证尚不能真实取数，还需在 `fengshenbi_provider.py` 的 `API_ENDPOINTS` 填充真实端点（见第 10 节）。
+> **注意**：MCP SSE 网关地址与 JWT 换取端点已内置（见第 10 节），无需手填端点；但真实取数还需账号开通风神 MCP **邀测白名单**（每周二批量开通），且仅字节内网可达。开通前取数诚实回退 Mock。
 
 ---
 
@@ -326,7 +326,7 @@ class DataSourceProvider(ABC):
 | source_type | 名称 | is_real | 连接状态 | 说明 |
 |-------------|------|---------|----------|------|
 | `currentLocal` | 本地 SQLite（零售示例库） | **True** | real_ready | 4 张表、21,064 行，完整可用 |
-| `fengshenBi` | 风神 BI（企业级接入层） | False | mock / configured | 授权、状态机、分阶段问数已就绪；真实端点待 OpenAPI 文档填充 |
+| `fengshenBi` | 风神 BI（企业级接入层） | False | mock / configured | 授权、状态机、分阶段问数已就绪；MCP SSE+JWT 已打通，真实取数待邀测白名单开通（见第 10 节） |
 
 ### 9.5 文件结构
 
@@ -335,7 +335,7 @@ src/datasource/
 ├── __init__.py              # 包入口（导出 get_provider / provider_registry / reset_provider）
 ├── base.py                  # DataSourceProvider 抽象基类（基础取数 + 企业 BI 扩展接口）
 ├── local_provider.py        # 本地 SQLite Provider（真实可用）
-├── fengshenbi_provider.py   # 风神 BI Provider（真实接入准备版，见第 10 节）
+├── fengshenbi_provider.py   # 风神 BI Provider（MCP SSE transport + JWT 动态换取，见第 10 节）
 └── factory.py               # 工厂：按 source_type 多实例缓存 Provider
 ```
 
@@ -417,129 +417,166 @@ _REGISTRY = {
 
 > **结论先行**：风神 BI 有两类开放接口，用途完全不同，切勿混用——
 > - **OpenAPI（REST）**：面向**仪表盘嵌入**与**权限/资源治理**（用户组、资源授权、行列权限、角色、审批流、资源组、分析主题、数据集标签、仪表盘/报表列表）。**它不含任何「执行 SQL / 查询数据集数据 / 取数」端点。**
-> - **MCP 服务（标准 MCP 协议，Model Context Protocol）**：才是真正的「**取数**」通道，通过 3 个数据集工具暴露查询能力。
+> - **MCP 服务（标准 MCP 协议 · SSE transport）**：才是真正的「**取数**」通道，通过数据集工具暴露查询能力。
 >
-> 本系统「企业 BI 问数」的**取数主链路对接 MCP**（已把工具契约、SQL 方言、鉴权、网关适配固化进代码）；OpenAPI 仅保留占位，供未来嵌入/治理场景扩展。
+> 本系统「企业 BI 问数」的**取数主链路对接 MCP**：工具契约、SQL 方言、SSE 传输、JWT 动态换取、白名单容错均已落地，并用**Python 标准库**（urllib + threading，零第三方依赖）在内网实测跑通了握手与鉴权。OpenAPI 仅保留占位，供未来嵌入/治理场景扩展。
 
-### 10.1 风神 MCP 工具契约（已固化进代码，非伪造）
+### 10.1 风神 MCP 工具契约（`tools/list` 实测返回，非伪造）
 
-代码位置：[fengshenbi_provider.py](file:///Users/bytedance/Desktop/graduation%20project/src/datasource/fengshenbi_provider.py) 中的 `MCP_TOOLS` 常量。
+代码位置：[fengshenbi_provider.py](file:///Users/bytedance/Desktop/graduation%20project/src/datasource/fengshenbi_provider.py) 中的 `MCP_TOOLS` 常量。实测 `tools/list` 返回 4 个工具，其中 3 个为业务取数工具：
 
 | 本系统能力 | MCP 工具名 | 入参 | 说明 |
 |------------|-----------|------|------|
 | 数据集列表 | `get_data_set_by_appid` | `appId`, `Authorization` | 按项目 ID + 用户 JWT，返回该用户**有权限**的数据集列表 |
 | 字段 Schema | `get_schema` | `dataset_id`, `Authorization` | 返回字段元数据，含 `descr`(口径)、`isAggregated`(是否已聚合)、`isPartitionField`(是否分区字段) |
-| SQL 取数 | `query_data_by_sql` | `dataSetId`, `sql`, `Authorization` | 在指定数据集上执行 SQL 返回结果集 |
+| SQL 取数 | `query_data_by_sql` | `dataSetId`(整数), `sql`, `Authorization` | 在指定数据集上执行 SQL 返回结果集 |
+| （官方示例） | `get_weather_eb9dbb2d` | — | 服务自带的天气演示工具，非业务能力，本系统不调用 |
 
-> MCP **没有**独立的「自然语言问数」工具——NL→SQL 由本系统的 Agent/LLM 完成（这正是本项目语义层 Text-to-SQL 的价值），MCP 只负责执行。
+> MCP **没有**独立的「自然语言问数」工具——NL→SQL 由本系统的 Agent/LLM 完成（这正是本项目语义层 Text-to-SQL 的价值），MCP 只负责执行。握手时 `serverInfo.name` 实测为「风神数据集查询」。
 
 ### 10.2 MCP SQL 书写规范（`_to_aeolus_sql()` 已自动转译）
 
 风神 MCP 的 SQL 不是普通表名/列名，而是用 **ID 占位符**：
 
-- **表名**：`FROM` 后写 `` `[数据集ID]` ``，例：`` from `[293910]` ``
-- **列名**：字段写 `` `[列ID]` ``，例：`` select `[1586871766173]` from `[293910]` ``
+- **表名**：`FROM` 后写 `` `[数据集ID]` ``，例：`` from `[6036798]` ``
+- **列名**：字段写 `` `[列ID]` ``，例：`` select `[1586871766173]` from `[6036798]` ``
 - **分区字段强制筛选**：凡 `isPartitionField=1` 的字段**必须**在 `WHERE` 中筛选，否则服务端拒绝执行；缺省时自动注入 `` `[分区字段ID]`='${last_date}' ``（多个分区字段都要筛）。日期字段优先匹配用户输入同名，找不到再匹配 `pdate`。
 - **已聚合字段**：`isAggregated=1` 的字段不要再套 `SUM/COUNT` 等聚合函数。
 
 转译由 [_to_aeolus_sql](file:///Users/bytedance/Desktop/graduation%20project/src/datasource/fengshenbi_provider.py) 在执行前自动完成（表名→`[数据集ID]`、列名→`[列ID]`、分区字段补 `WHERE`），转译后的 SQL 会以 `transpiled_sql` 回传，便于审计与答辩展示。
 
-### 10.3 鉴权与凭证
+### 10.3 真实传输机制：MCP SSE transport（已实测打通）
+
+风神 MCP **不是**「单次 POST 读 JSON」，而是标准 **MCP SSE transport**（长连接 + 消息回推）。完整时序如下，代码落点为模块级类 `_McpSseSession`：
+
+1. **建连**：`GET https://gg8z1crz.mcp.bytedance.net/sse`（请求头 `Accept: text/event-stream`），后台线程持续读流。
+2. **拿 endpoint**：流上第一个事件为 `event: endpoint`，`data` 是回传地址 `https://<host>/message?sessionId=<sessionId>`。
+3. **握手**：向该 endpoint `POST` 一个 `initialize` JSON-RPC（HTTP 返回 **202 Accepted**）；真正的握手结果**不从 POST 响应读**，而是稍后从 SSE 流上按 jsonrpc `id` 回推（`result.serverInfo`）。随后再 POST 一条无 `id` 的 `notifications/initialized`。
+4. **调工具**：向同一 endpoint `POST` `tools/call`（同样 202），业务结果也从 SSE 流按 `id` 回推；流上无 `id` 的 keepalive 通知直接忽略。
+
+实现要点（全部标准库，零第三方包）：`threading.Thread` 后台读 SSE 流 + `threading.Condition` 按 jsonrpc `id` 分发响应 + `threading.Event` 等待 endpoint 到达 + 一把串行锁保证调用顺序（天然契合 QPM ≤ 3）。
+
+> 常量：`MCP_GATEWAY_DEFAULT = "https://gg8z1crz.mcp.bytedance.net/sse"`（未配 `FENGSHEN_BI_MCP_GATEWAY_URL` 时内置回退）。
+
+### 10.4 鉴权：JWT 动态换取（已实测打通）
+
+MCP 工具入参里的 `Authorization` 是一个**短期用户 JWT**（`"Bearer <jwt>"`），它**不是 HTTP 头，而是 tools/call 的 arguments 字段**。JWT 无需手工申请，由开发者凭证动态换取：
+
+- **换取端点**：`POST https://data.bytedance.net/aeolus/api/v3/openapi/jwtToken`
+- **请求头**：`Content-Type: application/json` + `Cookie: locale=zh-cn`（**无需**登录态 sessionid）
+- **请求体**：
+
+```json
+{"metadata": {"clientId": "<ClientID>", "clientSecret": "<ClientSecret>",
+              "proxyUser": "chenqi.2005", "expire": 1800}}
+```
+
+- **返回**：`{"code":"aeolus/ok","data":{"jwtToken":"<896字符>","proxyUser":"..."},"msg":"成功"}`
+- 代码落点 `_fetch_mcp_jwt()`：静态 `FENGSHEN_BI_USER_JWT` 优先；否则用 `clientId + clientSecret + proxyUser` 自动换取，并在内存中缓存到 `expire - 120s`（提前 2 分钟过期，避免边界失效）。
+- 调工具时由 `_mcp_authorization()` 统一拼成 `"Bearer " + jwt` 注入 arguments。
+
+业务响应统一是风神信封 `{"code","msg","data"}`：`code == "aeolus/ok"` 时取 `data`；否则（含白名单错误）抛 `RuntimeError`，由上层容错。解析落点 `_parse_mcp_result()`。
 
 | 凭证 | 环境变量 | 来源 / 说明 |
 |------|----------|-------------|
-| 项目 ID（`appId`） | `FENGSHEN_BI_WORKSPACE_ID`（回退 `APP_ID`） | 风神项目空间 ID；`get_data_set_by_appid` 入参 |
-| 用户 JWT | `FENGSHEN_BI_USER_JWT` | MCP 的 `Authorization` 入参，**按该用户的数据权限**返回结果 |
-| 应用凭证 | `FENGSHEN_BI_CLIENT_ID` / `FENGSHEN_BI_CLIENT_SECRET` | 开发者后台（CN）申请：`https://data.bytedance.net/aeolus#/developer/console/certification` |
-| sophon api_key | `FENGSHEN_BI_SOPHON_API_KEY` | 内网 LLM/MCP 网关鉴权：`https://sophon-ai.bytedance.net/paas/token` |
-| MCP 网关 | `FENGSHEN_BI_MCP_GATEWAY_URL` | 公网/跨网部署时的 MCP over HTTP(S) 网关地址 |
+| 项目 ID（`appId`） | `FENGSHEN_BI_WORKSPACE_ID`（回退 `APP_ID`） | 风神项目空间 ID；`get_data_set_by_appid` 入参（本项目用 `1000821`） |
+| 开发者凭证 | `FENGSHEN_BI_CLIENT_ID` / `FENGSHEN_BI_CLIENT_SECRET` | 开发者后台「凭证管理」（CN）：`https://data.bytedance.net/aeolus#/developer/console/certification`，凭证类型选「用户」 |
+| 代理用户 | `FENGSHEN_BI_PROXY_USER` | 换取 JWT 时的数据权限身份，如 `chenqi.2005`（即风神账号） |
+| 静态 JWT（二选一） | `FENGSHEN_BI_USER_JWT` | 直接配置后优先使用，无需 client 凭证与 proxy_user |
+| sophon api_key | `FENGSHEN_BI_SOPHON_API_KEY` | 仅内网 PSM/LLM 网关形态使用：`https://sophon-ai.bytedance.net/paas/token` |
+| MCP SSE 网关 | `FENGSHEN_BI_MCP_GATEWAY_URL` | 内置默认 `…/mcp.bytedance.net/sse`，一般无需改；跨网才需覆盖 |
 
-> 安全约束不变：所有密钥仅由**后端进程内存托管**，前端只脱敏回显、不持久化、不进 git。
+> 安全约束不变：所有密钥仅由**后端进程内存托管**（`.env` 被 `.gitignore` 忽略、不进 git），前端只脱敏回显、不持久化。
 
-### 10.4 四个硬性前提（限制，务必知晓）
+### 10.5 当前联调状态与唯一卡点（邀测白名单）
 
-1. **邀测试用制**：风神 MCP 目前为邀测阶段，需填飞书问卷登记，每周二批量开通、飞书通知。
-   登记表：`https://bytedance.larkoffice.com/share/base/form/shrcnV2XPypCnz1jEAbmtoPXMCz`
-2. **仅内网可达**：官方接入方式是字节内网基建 `byted_mcp_client_with_server_psm(['data.aeolus.data_set_query'], region='cn')` + sophon api_key。**公网阿里云 ECS 无法直连**内网 PSM。
-3. **按用户鉴权**：除 clientId/clientSecret 外，每次取数都要传**用户 JWT**，按该用户数据权限返回。
-4. **限流与区域**：QPM ≤ 3（每分钟最多 3 次，代码已在 `_mcp_throttle()` 做进程内节流）、仅中国区、大表超资源会失败；连接超时 10s、请求超时 600s。
+协议、鉴权、网络**均已在内网实测通过**：JWT 成功换取（HTTP 200 / 0.18s）、SSE `initialize` 握手成功、`tools/list` 返回 4 工具。但首个**业务**调用被白名单拦截：
 
-### 10.5 两种部署形态
+```json
+{"code": "aeolus/thirdParty/userNotInWhiteList",
+ "msg": "需要添加为白名单用户才能使用该功能，请联系oncall"}
+```
 
-**形态 A —— 内网 / 堡垒机 / VPN（官方 PSM 方式）**
-在能访问字节内网的机器运行，使用 `byted_mcp_client` 走 PSM 服务发现。代码接入点为 `_call_mcp_via_psm()`（当前显式抛出"需内网 SDK"引导，不伪造导入）。填入内网 SDK 调用即可，上层逻辑无需改动。
+- **结论**：这不是代码/凭证/网络问题，而是账号 `chenqi.2005` 尚未开通 MCP **邀测白名单**。
+- **处理**：需用户本人填飞书问卷登记，**每周二批量开通**、飞书通知：
+  `https://bytedance.larkoffice.com/share/base/form/shrcnV2XPypCnz1jEAbmtoPXMCz`
+- **开通后无需改代码**：`validate_credentials()` 探测到 `aeolus/ok` 即自动转 `real_ready`，datasets/schema/query 全链路自动切真实取数。
+- **开通前的诚实行为**：状态显示「已配置 · 待开通邀测」+ 申请引导；数据集列表回退明确标注的 Mock（chips 不空白）；取数返回明确 error，**绝不伪造真实结果**。
 
-**形态 B —— 公网 ECS / 跨网（HTTP 网关方式，推荐用于本项目演示）**
-在内网部署一个把 MCP 暴露为 HTTPS 的 **MCP over HTTP 网关**（标准 MCP Streamable HTTP / JSON-RPC），然后配置 `FENGSHEN_BI_MCP_GATEWAY_URL`。Provider 用**标准库 urllib** 直接发起 MCP `tools/call` JSON-RPC（无需任何第三方依赖），响应兼容普通 JSON 与 SSE 流。
+### 10.6 部署形态与网络可达性
 
-> 未配置网关且非内网环境时：凭证可保存、状态为「**已配置 · 待内网联调**」，取数**回退明确标注的 Mock**，绝不伪造连通。这保证了公网 ECS 演示链路始终可用且诚实。
+| 形态 | 网络 | 取数行为 |
+|------|------|----------|
+| **本机 / 字节内网开发**（当前联调形态） | 可达 jwtToken 接口与 SSE 网关 | 白名单开通后即**真实取数**；开通前回退 Mock |
+| **公网阿里云 ECS**（生产演示） | **不可达**内网域名（jwtToken / SSE 均不通） | 网络报错后自动**回退 Mock**，演示链路不受影响 |
+| 内网 PSM（官方基建，预留） | 需 `byted_mcp_client` SDK | 接入点 `_call_mcp_via_psm()`，当前显式抛「需内网 SDK」引导，不伪造导入 |
 
-### 10.6 配置项一览（环境变量 / 前端表单均可）
+> 即：本项目在本机内网做真实联调；公网 ECS 始终保持「诚实 Mock」。若未来要让公网也真实取数，需在内网部署一个把 SSE MCP 暴露到公网的反向网关（注意数据安全与权限），再覆盖 `FENGSHEN_BI_MCP_GATEWAY_URL`。
+
+### 10.7 配置项一览（环境变量 / 前端表单均可）
 
 | 变量 | 用途 | 取数是否必填 |
 |------|------|--------------|
-| `FENGSHEN_BI_WORKSPACE_ID` | 项目 ID（MCP `appId`） | ✅ |
-| `FENGSHEN_BI_USER_JWT` | 用户 JWT（`Authorization`） | ✅（或用 client 凭证换） |
-| `FENGSHEN_BI_CLIENT_ID` / `CLIENT_SECRET` | 开发者后台应用凭证 | JWT 的替代/补充 |
-| `FENGSHEN_BI_SOPHON_API_KEY` | 内网网关 sophon key | 内网形态需要 |
-| `FENGSHEN_BI_MCP_GATEWAY_URL` | MCP over HTTP 网关 | 公网/跨网形态必填 |
+| `FENGSHEN_BI_WORKSPACE_ID` | 项目 ID（MCP `appId`），本项目 `1000821` | ✅ |
+| `FENGSHEN_BI_CLIENT_ID` / `CLIENT_SECRET` / `PROXY_USER` | 开发者凭证 + 代理用户，用于自动换 JWT | ✅（或配静态 JWT） |
+| `FENGSHEN_BI_USER_JWT` | 静态用户 JWT（`Authorization`），配后优先 | 与 client 凭证二选一 |
+| `FENGSHEN_BI_MCP_GATEWAY_URL` | MCP SSE 网关，内置默认值 | 一般无需改 |
+| `FENGSHEN_BI_SOPHON_API_KEY` | 内网网关 sophon key | 仅 PSM 形态 |
 | `FENGSHEN_BI_MCP_PSM` / `MCP_REGION` | PSM/区域，默认 `data.aeolus.data_set_query` / `cn` | 一般无需改 |
 | `FENGSHEN_BI_BASE_URL` / `APP_ID` / `APP_SECRET` / `TOKEN` | OpenAPI 嵌入/治理用 | 取数非必需 |
 
-### 10.7 联调时可能需要微调的位置
+### 10.8 代码落点与现状
 
-| 位置 | 现状 | 联调时做什么 |
-|------|------|--------------|
-| `MCP_TOOLS` | ✅ 工具名/入参已按文档填实 | 一般无需改 |
-| `_to_aeolus_sql()` | ✅ 表名/列名/分区转译已实现 | 按真实 SQL 方言边界补充（如多表 JOIN） |
-| `_call_mcp_via_gateway()` | 已实现标准 MCP JSON-RPC | 按网关要求补 `initialize` 握手 / 鉴权头名 |
-| `_call_mcp_via_psm()` | 显式引导（不伪造） | 在内网用 `byted_mcp_client` 实现真实调用 |
-| `_map_schema()` | 已兼容 `descr/isAggregated/isPartitionField` 与多种字段 ID 命名 | 按真实响应键名对齐字段 ID / 分区标记 |
-| `is_real` / `_mcp_ready()` | ✅ 自动判定 | 无需手改，网关+凭证就绪即 `real_ready` |
+| 位置 | 现状 |
+|------|------|
+| `_McpSseSession` | ✅ SSE transport 完整实现（建连/endpoint/握手/按 id 回推/串行锁），实测握手 + tools/list 通过 |
+| `_fetch_mcp_jwt()` | ✅ jwtToken 动态换取 + 内存缓存，实测换到真实 JWT |
+| `_call_mcp_tool()` / `_call_mcp_via_gateway()` | ✅ 走 SSE 会话，节流 + 自动注入 `Authorization`，已替换旧的单次 POST 实现 |
+| `_parse_mcp_result()` | ✅ 解析 content[*].text + 风神信封，非 ok code（含白名单）抛错 |
+| `list_datasets()` | ✅ MCP 失败记 `_mcp_last_error` 并回退 Mock，chips 不空白 |
+| `validate_credentials()` | ✅ 直连底层探测，白名单/网络/凭证分类提示，不被 Mock 回退误判 |
+| `_to_aeolus_sql()` | ✅ 表名/列名/分区转译；待真实数据集验证多表 JOIN 等边界 |
+| `_call_mcp_via_psm()` | 显式引导（不伪造），供内网 SDK 形态 |
+| `_map_schema()` | 已兼容 `descr/isAggregated/isPartitionField` 与多种字段 ID 命名，待真实响应对齐 |
 
-> 上层 API 路由（`app_backend.py`）、前端页面、五态状态机、plan→confirm 分阶段流程**均无需改动**。
+> 上层 API 路由（`app_backend.py`，已把 `proxy_user` 加入配置白名单）、前端页面、五态状态机、plan→confirm 分阶段流程**均无需改动**。
 
-### 10.8 接入步骤（Checklist）
+### 10.9 接入步骤（Checklist）
 
-1. 提交飞书问卷申请风神 MCP 试用，等待开通（每周二批量）。
-2. 在开发者后台申请 `clientId` / `clientSecret`；准备一个有权限的**用户 JWT**；内网形态再申请 sophon api_key。
-3. 选择部署形态：内网机器（形态 A）或部署 MCP HTTP 网关（形态 B）。
-4. 配置环境变量（或前端「系统设置 → 风神 BI」表单）：项目 ID、用户 JWT（或 client 凭证）、网关地址。
-5. 测试连接：
+1. 提交飞书问卷申请风神 MCP 邀测白名单，等待开通（每周二批量、飞书通知）。
+2. 在开发者后台「凭证管理」创建**用户类型**凭证，拿到 `ClientID` / `ClientSecret`；确认代理用户（风神账号，如 `chenqi.2005`）。
+3. 在 `.env`（或前端「系统设置 → 风神 BI」表单）配置：`FENGSHEN_BI_WORKSPACE_ID=1000821`、`FENGSHEN_BI_CLIENT_ID`、`FENGSHEN_BI_CLIENT_SECRET`、`FENGSHEN_BI_PROXY_USER`（网关用内置默认即可）。
+4. 在**字节内网**机器启动后端，测试连接：
 
 ```bash
-# MCP 取数凭证示例（保存 + 测试连接）
+# 保存配置 + 测试连接（proxy_user 用于自动换 JWT）
 curl -X POST http://localhost:5001/api/enterprise-bi/connect \
   -H "Content-Type: application/json" \
-  -d '{"workspace_id":"293910","user_jwt":"<用户JWT>","client_id":"<cid>","client_secret":"<csec>","mcp_gateway_url":"https://<你的MCP网关>"}'
+  -d '{"workspace_id":"1000821","client_id":"<cid>","client_secret":"<csec>","proxy_user":"chenqi.2005"}'
 ```
 
-6. 状态变为 `real_ready`、`is_real=true` 即接通；此后 plan→confirm 返回**真实**结果。
+5. 白名单开通后，状态自动变为 `real_ready`、`is_real=true`；此后 plan→confirm 返回**真实**结果。开通前状态为「已配置 · 待开通邀测」，取数诚实回退 Mock。
 
-### 10.9 已从现有仪表盘链接确认的信息
+### 10.10 已确认信息（实测 / 工作台核对）
 
-用户已提供可访问的风神仪表盘链接：
-
-```text
-https://data.bytedance.net/aeolus/pages/dashboard/1851618?appId=1000821&sheetId=2681754
-```
-
-| 项 | 已确认值 | 说明 |
+| 项 | 已确认值 | 来源 |
 |----|----------|------|
-| 站点 Origin | `https://data.bytedance.net` | 风神站点来源（OpenAPI 域名参考） |
-| `appId` | `1000821` | 可作项目 ID（MCP `appId`）的联调核对参考 |
-| `sheetId` / `dashboard_id` | `2681754` / `1851618` | 关联对象 ID，留档排查用 |
+| JWT 换取端点 | `https://data.bytedance.net/aeolus/api/v3/openapi/jwtToken` | 官方文档 + 实测 200 |
+| MCP SSE 网关 | `https://gg8z1crz.mcp.bytedance.net/sse` | 实测拿到 endpoint 事件 |
+| `serverInfo.name` | `风神数据集查询` | initialize 握手回推 |
+| 项目 `appId` | `1000821`（项目「生活服务」，数据集最多） | 风神工作台 URL |
+| 代理用户 | `chenqi.2005` | 凭证示例 / 风神账号 |
+| 工具列表 | `get_data_set_by_appid` / `get_schema` / `query_data_by_sql` / `get_weather_eb9dbb2d` | tools/list 实测 |
+| 仪表盘链接 | `…/dashboard/1851618?appId=1000821&sheetId=2681754` | 用户提供，留档 |
 
-> 注意：前台页面参数 ≠ 接口契约。`clientSecret`、`user_jwt`、MCP 网关地址、真实字段 ID 仍须通过申请/联调获得，代码中不做臆造。
+### 10.11 验收标准
 
-### 10.10 验收标准
-
-1. `curl /api/enterprise-bi/status` 中 `connection_status` 为 `real_ready`、`is_real` 为 `true`、`details.channel` 为 `mcp`
+1. 白名单开通后：`curl /api/enterprise-bi/status` 中 `connection_status` 为 `real_ready`、`is_real` 为 `true`、`details.channel` 为 `mcp`
 2. `GET /api/enterprise-bi/datasets` 返回真实数据集（无 mock 标记）
 3. `GET /api/enterprise-bi/schema?dataset_id=...` 返回真实字段（含字段 ID / 分区标记）
 4. 「企业 BI 问数」页 plan→confirm 返回**真实**结果（无黄色 Mock 横幅），结果中可见转译后的 `transpiled_sql`
 5. 凭证在前端始终脱敏显示，刷新页面后密钥不明文回显
-6. 未接通环境（如公网 ECS 无网关）下，状态诚实显示「待内网联调」，取数回退 Mock 且不报错
+6. **白名单未开通 / 公网 ECS** 下：状态诚实显示「待开通邀测 / 待内网联调」，取数回退 Mock 且不报错（当前已满足）
 
 ---
 

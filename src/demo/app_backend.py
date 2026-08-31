@@ -1171,7 +1171,7 @@ def api_ent_config():
     # 仅透传请求中真实给出的字段：缺失/留空的密钥键不伪造成 None，
     # 否则 configure() 会把显式 None 解读为「清空」，误删已保存的凭证（留空=不修改）。
     _ent_fields = ("base_url", "app_id", "app_secret", "token", "workspace_id",
-                   "client_id", "client_secret", "user_jwt", "sophon_api_key",
+                   "client_id", "client_secret", "user_jwt", "proxy_user", "sophon_api_key",
                    "mcp_psm", "mcp_region", "mcp_gateway_url")
     payload = {k: body[k] for k in _ent_fields if body.get(k) is not None}
     result = provider.configure(payload)
@@ -1198,7 +1198,7 @@ def api_ent_connect():
     # 仅收集非空字段传给 validate → configure；缺失的密钥键（如前端留空的 app_secret）
     # 保持后端已有值，绝不能因「测试连接」而把已保存凭证冲掉。
     _ent_fields = ("base_url", "app_id", "app_secret", "token", "workspace_id",
-                   "client_id", "client_secret", "user_jwt", "sophon_api_key",
+                   "client_id", "client_secret", "user_jwt", "proxy_user", "sophon_api_key",
                    "mcp_psm", "mcp_region", "mcp_gateway_url")
     present = {k: body[k] for k in _ent_fields if body.get(k) not in (None, "")}
     config = present if present else None
@@ -1226,8 +1226,16 @@ def api_ent_datasets():
     """企业 BI 数据集列表。"""
     provider = _ent_provider(request.args.get("source_type"))
     try:
+        datasets = provider.list_datasets()
+        # MCP 静态就绪但本次真实调用失败（邀测白名单未开通/网络不通）时已回退 Mock，
+        # 需按「本次是否真实命中」诚实标注，不能仅凭静态配置误报 is_real=true。
+        fallback_err = getattr(provider, "mcp_last_error", "") or ""
+        fell_back = bool(fallback_err)
         return jsonify({"success": True, "source_type": provider.source_type,
-                        "is_real": provider.is_real, "datasets": provider.list_datasets()})
+                        "is_real": provider.is_real and not fell_back,
+                        "mock_fallback": fell_back,
+                        "fallback_reason": fallback_err,
+                        "datasets": datasets})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -1340,7 +1348,7 @@ def api_ent_confirm():
         "sql": sql,
         "dataset_id": dataset_id,
         "source_type": provider.source_type,
-        "is_real": provider.is_real,
+        "is_real": provider.is_real and not bool(exec_res.get("mock")),
         "mock": bool(exec_res.get("mock")),
         "mock_note": exec_res.get("mock_note", ""),
         "pending_integration": bool(exec_res.get("pending_integration")),

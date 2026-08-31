@@ -68,6 +68,7 @@ import os
 import json
 import time
 import random
+import threading
 import urllib.request
 import urllib.error
 from typing import Any
@@ -115,6 +116,13 @@ MCP_SERVER_PSM_DEFAULT = "data.aeolus.data_set_query"
 MCP_REGION_DEFAULT = "cn"
 MCP_QPM_LIMIT = 3  # 文档约束：请求 QPM ≤ 3，仅中国区，大表超资源会失败
 
+# 官方文档「风神 MCP 与 Trae 的集成」给出的 SSE 网关（仅字节内网可达）。
+# 未显式配置 FENGSHEN_BI_MCP_GATEWAY_URL 时回退此地址；公网不可达，调用会网络报错并回退 Mock。
+MCP_GATEWAY_DEFAULT = "https://gg8z1crz.mcp.bytedance.net/sse"
+# JWT 换取端点：用 clientId/clientSecret + proxyUser 换取调用方用户 JWT（默认约 1 小时有效）
+MCP_JWT_URL = "https://data.bytedance.net/aeolus/api/v3/openapi/jwtToken"
+MCP_JWT_EXPIRE = 1800  # 申请的 JWT 有效期（秒）
+
 # MCP 工具契约：key 为本 provider 内部能力，value 为风神 MCP 真实工具名/入参/说明
 MCP_TOOLS: dict[str, dict[str, Any]] = {
     "list_datasets": {
@@ -137,6 +145,113 @@ MCP_TOOLS: dict[str, dict[str, Any]] = {
 # 密钥类字段（回显、日志时一律脱敏）
 _SECRET_KEYS = {"app_secret", "token", "access_token",
                 "client_secret", "user_jwt", "sophon_api_key"}
+
+
+class _McpSseSession:
+    """风神 MCP 的 SSE transport 长连接会话（标准库实现，零第三方依赖）。
+
+    官方「风神 MCP 与 Trae 的集成」采用 MCP SSE transport：
+      1) GET  <gateway>/sse 建立长连接，先收到 `event: endpoint`，data 为 POST 地址（带 sessionId）；
+      2) POST initialize →（结果从 SSE 流回推）→ POST notifications/initialized 完成握手；
+      3) 之后 POST tools/call 到同一 endpoint，业务结果从 SSE 流按 jsonrpc `id` 回推（POST 本身回 202）。
+    后台线程读 SSE，Condition 按 id 分发响应；外层一把锁串行调用（契合 QPM ≤ 3）。
+    """
+
+    def __init__(self, sse_url: str, connect_timeout: int = 15, io_timeout: int = 600):
+        self._sse_url = sse_url
+        self._connect_timeout = connect_timeout
+        self._io_timeout = io_timeout
+        self._endpoint = ""
+        self._endpoint_ready = threading.Event()
+        self._cond = threading.Condition()
+        self._responses: dict[int, dict] = {}
+        self._rpc_id = 0
+        self._started = False
+        self._start_lock = threading.Lock()
+        self._call_lock = threading.Lock()
+        self._handshaked = False
+
+    def _reader_loop(self) -> None:
+        req = urllib.request.Request(self._sse_url, headers={"Accept": "text/event-stream"})
+        resp = urllib.request.urlopen(req, timeout=self._io_timeout)
+        event = ""
+        for raw in resp:
+            line = raw.decode("utf-8", "ignore").rstrip("\r\n")
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                data = line[5:].strip()
+                if event == "endpoint":
+                    self._endpoint = data
+                    self._endpoint_ready.set()
+                elif event == "message":
+                    try:
+                        obj = json.loads(data)
+                    except Exception:
+                        continue
+                    # 仅按带 id 的请求/响应配对；keepalive 等通知无 id，忽略
+                    if isinstance(obj, dict) and obj.get("id") is not None:
+                        with self._cond:
+                            self._responses[obj["id"]] = obj
+                            self._cond.notify_all()
+
+    def _ensure_started(self) -> None:
+        with self._start_lock:
+            if self._started:
+                return
+            threading.Thread(target=self._reader_loop, daemon=True).start()
+            if not self._endpoint_ready.wait(self._connect_timeout):
+                raise RuntimeError(
+                    f"风神 MCP SSE 连接超时：{self._connect_timeout}s 内未收到 endpoint 事件"
+                    "（请确认处于字节内网且网关可达）")
+            self._started = True
+
+    def _post(self, message: dict) -> int:
+        req = urllib.request.Request(
+            self._endpoint, data=json.dumps(message).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=self._io_timeout) as r:
+            return r.status
+
+    def _wait_response(self, rid: int, timeout: float) -> dict | None:
+        deadline = time.time() + timeout
+        with self._cond:
+            while rid not in self._responses and time.time() < deadline:
+                self._cond.wait(max(0.1, deadline - time.time()))
+            return self._responses.get(rid)
+
+    def _handshake(self) -> None:
+        if self._handshaked:
+            return
+        self._rpc_id += 1
+        rid = self._rpc_id
+        self._post({"jsonrpc": "2.0", "id": rid, "method": "initialize",
+                    "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                               "clientInfo": {"name": "semantic-bi-agent", "version": "1.0"}}})
+        resp = self._wait_response(rid, self._connect_timeout)
+        if not resp or "result" not in resp:
+            raise RuntimeError(f"风神 MCP initialize 握手失败：{resp}")
+        # 初始化完成通知（无 id、无响应）
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        self._handshaked = True
+
+    def call_tool(self, name: str, arguments: dict, timeout: float = 120.0) -> dict:
+        """调用一个 MCP 工具，返回其 result（dict）。串行、阻塞至 SSE 回推或超时。"""
+        self._ensure_started()
+        with self._call_lock:
+            self._handshake()
+            self._rpc_id += 1
+            rid = self._rpc_id
+            self._post({"jsonrpc": "2.0", "id": rid, "method": "tools/call",
+                        "params": {"name": name, "arguments": arguments}})
+            resp = self._wait_response(rid, timeout)
+        if not resp:
+            raise RuntimeError(f"风神 MCP 工具 {name} 响应超时（{timeout:.0f}s）")
+        if resp.get("error"):
+            err = resp["error"]
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            raise RuntimeError(f"风神 MCP 工具 {name} 返回错误：{msg}")
+        return resp.get("result", {}) or {}
 
 
 class FengshenBiProvider(DataSourceProvider):
@@ -162,6 +277,14 @@ class FengshenBiProvider(DataSourceProvider):
         # MCP JSON-RPC 自增请求 ID 与上次调用时间戳（用于 QPM≤3 进程内节流）
         self._mcp_rpc_id: int = 0
         self._mcp_last_call_ts: float = 0.0
+        # MCP 用户 JWT 缓存（由 clientId/clientSecret + proxyUser 动态换取，内存态不落盘）
+        self._mcp_jwt: str = ""
+        self._mcp_jwt_expire_at: float = 0.0
+        # MCP SSE 长连接会话（懒加载、串行复用）与其创建锁
+        self._mcp_session: "_McpSseSession | None" = None
+        self._mcp_session_lock = threading.Lock()
+        # 最近一次 MCP 真实调用错误（供状态/排障展示，内存态）
+        self._mcp_last_error: str = ""
 
     def _cfg(self, key: str) -> str:
         """统一配置读取：运行时配置优先，其次环境变量。"""
@@ -178,6 +301,7 @@ class FengshenBiProvider(DataSourceProvider):
             "client_id": "FENGSHEN_BI_CLIENT_ID",
             "client_secret": "FENGSHEN_BI_CLIENT_SECRET",
             "user_jwt": "FENGSHEN_BI_USER_JWT",
+            "proxy_user": "FENGSHEN_BI_PROXY_USER",
             "sophon_api_key": "FENGSHEN_BI_SOPHON_API_KEY",
             "mcp_psm": "FENGSHEN_BI_MCP_PSM",
             "mcp_region": "FENGSHEN_BI_MCP_REGION",
@@ -204,24 +328,30 @@ class FengshenBiProvider(DataSourceProvider):
         """MCP 工具的 appId = 风神项目 ID：优先 workspace_id，回退 app_id。"""
         return self._cfg("workspace_id") or self._cfg("app_id")
 
+    def _mcp_has_auth(self) -> bool:
+        """是否具备 MCP 鉴权凭证：静态用户 JWT，或 clientId/clientSecret + proxyUser（动态换 JWT）。"""
+        if self._cfg("user_jwt"):
+            return True
+        return bool(self._cfg("client_id") and self._cfg("client_secret")
+                    and self._cfg("proxy_user"))
+
     def _mcp_has_cred(self) -> bool:
-        """是否已具备 MCP 调用凭证：项目 ID + 鉴权（用户 JWT，或 clientId/Secret）。"""
-        has_auth = bool(self._cfg("user_jwt") or
-                        (self._cfg("client_id") and self._cfg("client_secret")))
-        return bool(self._mcp_app_id() and has_auth)
+        """是否已配置 MCP 凭证（用于「已配置」状态判定；不要求项目 ID/网关可达）。"""
+        return self._mcp_has_auth()
 
     def _mcp_gateway(self) -> str:
-        """MCP over HTTP(S) 网关地址（跨网/公网走标准 JSON-RPC）；未配置返回空。"""
-        return self._cfg("mcp_gateway_url").rstrip("/")
+        """MCP SSE 网关地址：显式配置优先，否则回退官方默认 SSE 网关（仅字节内网可达）。"""
+        return self._cfg("mcp_gateway_url").rstrip("/") or MCP_GATEWAY_DEFAULT.rstrip("/")
 
     def _mcp_ready(self) -> bool:
-        """MCP 取数是否可真实发起：凭证齐全 且 传输通道就绪。
+        """MCP 真实取数是否可发起：鉴权凭证 + 项目 ID(appId) + SSE 网关 三者齐备。
 
-        - 网关方式：配置了 FENGSHEN_BI_MCP_GATEWAY_URL 即可用标准库发起 MCP JSON-RPC；
-        - 内网 PSM 方式：依赖 byted_mcp_client（仅字节内网可装/可达），公网 ECS 不具备，
-          故不作为自动就绪判据，需在部署了该 SDK 的内网环境显式启用（见 _call_mcp_tool）。
+        - SSE 网关方式（官方默认）：标准库走 MCP SSE transport（GET /sse + POST /message）；
+        - 内网 PSM 方式：依赖 byted_mcp_client（仅字节内网），公网 ECS 不具备，
+          不作为自动就绪判据，需在部署该 SDK 的内网环境显式启用（见 _call_mcp_tool）。
+        注：本判定为静态配置判定，不探测网络；公网不可达时调用会报错并回退 Mock。
         """
-        return self._mcp_has_cred() and bool(self._mcp_gateway())
+        return bool(self._mcp_has_auth() and self._mcp_app_id() and self._mcp_gateway())
 
     def _rest_ready(self) -> bool:
         """OpenAPI REST 取数端点是否齐全（当前 OpenAPI 不含取数，恒为 False）。"""
@@ -232,10 +362,31 @@ class FengshenBiProvider(DataSourceProvider):
         """真实可用：MCP 取数通道就绪，或 OpenAPI REST 取数端点齐全且已验证。
 
         注意：不调用 connection_status()，避免与本属性互相递归。
+        这是「静态配置是否就绪」的判定；某次真实调用是否命中请结合 mcp_last_error。
         """
         if self._mcp_ready():
             return True
         return self._rest_ready() and bool(self._last_verify and self._last_verify.get("ok"))
+
+    @property
+    def mcp_last_error(self) -> str:
+        """最近一次 MCP 真实调用的失败原因（空串 = 最近一次真实命中，或尚未尝试）。
+
+        凭证/网关静态就绪（is_real=True）但真实调用失败时（邀测白名单未开通、
+        网络不通、无权限），各取数方法会回退 Mock 并把原因记在这里，供上层把
+        回退结果诚实标注为 Mock，而不是仅凭静态配置误报「真实可用」。
+        """
+        return self._mcp_last_error
+
+    def _fallback_note(self) -> str:
+        """MCP 静态就绪但真实调用失败时，回退 Mock 的诚实说明（含白名单/网络引导）。"""
+        err = self._mcp_last_error or "真实取数未成功"
+        note = (f"风神 MCP 真实取数未成功，当前为模拟结果（需求识别与 SQL 草案为真实生成）。"
+                f"原因：{err}")
+        if "whitelist" in err.lower() or "白名单" in err:
+            note += (" 账号尚未开通风神 MCP 邀测白名单，需填飞书问卷申请"
+                     "（每周二批量开通、飞书通知）。")
+        return note
 
     @property
     def is_available(self) -> bool:
@@ -254,7 +405,7 @@ class FengshenBiProvider(DataSourceProvider):
         """写入前端提交的凭证配置（只更新显式给出的键；空串清空）。"""
         allowed = {"base_url", "app_id", "app_secret", "token", "workspace_id",
                    # 风神 MCP 取数
-                   "client_id", "client_secret", "user_jwt", "sophon_api_key",
+                   "client_id", "client_secret", "user_jwt", "proxy_user", "sophon_api_key",
                    "mcp_psm", "mcp_region", "mcp_gateway_url"}
         changed = []
         for k, v in (config or {}).items():
@@ -275,6 +426,8 @@ class FengshenBiProvider(DataSourceProvider):
             self._last_verify = None
             self._cached_token = ""
             self._token_expire_at = 0.0
+            self._mcp_jwt = ""
+            self._mcp_jwt_expire_at = 0.0
         return {
             "ok": True,
             "supported": True,
@@ -304,6 +457,7 @@ class FengshenBiProvider(DataSourceProvider):
             "client_id": _mask("client_id"),
             "client_secret": _mask("client_secret"),
             "user_jwt": _mask("user_jwt"),
+            "proxy_user": _mask("proxy_user"),
             "sophon_api_key": _mask("sophon_api_key"),
             "mcp_psm": self._cfg("mcp_psm"),
             "mcp_region": self._cfg("mcp_region"),
@@ -343,8 +497,8 @@ class FengshenBiProvider(DataSourceProvider):
         checks["workspace_id"] = bool(self._cfg("workspace_id"))
         checks["mcp_app_id"] = bool(self._mcp_app_id())
         checks["mcp_credential"] = bool(
-            self._cfg("user_jwt") or (self._cfg("client_id") and self._cfg("client_secret"))
-        )
+            self._cfg("user_jwt") or (self._cfg("client_id") and self._cfg("client_secret")))
+        checks["mcp_proxy_user"] = bool(self._cfg("proxy_user") or self._cfg("user_jwt"))
         checks["mcp_gateway"] = bool(self._mcp_gateway())
         checks["mcp_ready"] = self._mcp_ready()
         checks["endpoints_ready"] = self._endpoints_ready()
@@ -361,26 +515,45 @@ class FengshenBiProvider(DataSourceProvider):
             self._last_verify = result
             return result
 
-        # 2) MCP 取数通道就绪 → 真实握手（调用 get_data_set_by_appid 拉数据集列表）
+        # 2) MCP 取数通道就绪 → 真实探测（直接调底层工具，不走 list_datasets 的 Mock 回退，
+        #    以便区分「白名单未开通 / 凭证或网络错误 / 真正连通」）
         if self._mcp_ready():
             try:
-                datasets = self.list_datasets()  # _mcp_ready 为真时走真实 MCP
+                self._call_mcp_tool("list_datasets", {
+                    "appId": self._mcp_app_id(),
+                    "Authorization": self._mcp_authorization(),
+                })
+                count = len(self.list_datasets())  # 真实通道已通，重新拉取计数
+                self._mcp_last_error = ""
                 result = {
                     "ok": True,
                     "status": "real_ready",
-                    "message": f"风神 MCP 连接成功，凭证有效，可访问 {len(datasets)} 个数据集",
+                    "message": f"风神 MCP 连接成功，凭证有效且已开通邀测，可访问 {count} 个数据集",
                     "checked_at": time.time(),
                     "elapsed_ms": round((time.time() - t0) * 1000, 1),
-                    "details": {**checks, "channel": "mcp", "dataset_count": len(datasets)},
+                    "details": {**checks, "channel": "mcp", "dataset_count": count},
                 }
             except Exception as e:
+                msg = f"{type(e).__name__}: {e}"
+                if "WhiteList" in msg or "白名单" in msg or "whitelist" in msg.lower():
+                    message = (
+                        "凭证有效、内网与 SSE 网关可达，但当前账号尚未开通风神 MCP 邀测（白名单）。"
+                        "请填写《风神 MCP 服务试用申请登记表》（飞书问卷），官方每周二按申请顺序批量开通，"
+                        "收到飞书开通通知后无需改代码，再次测试即自动转为真实取数。")
+                    status = "configured"
+                elif "JWT" in msg or "网络" in msg or "SSE" in msg or "HTTP" in msg:
+                    message = f"风神 MCP 连接失败（凭证或网络，请确认在字节内网）：{msg}"
+                    status = "configured"
+                else:
+                    message = f"风神 MCP 握手失败：{msg}"
+                    status = "configured"
                 result = {
                     "ok": False,
-                    "status": "configured",
-                    "message": f"风神 MCP 握手失败：{type(e).__name__}: {e}",
+                    "status": status,
+                    "message": message,
                     "checked_at": time.time(),
                     "elapsed_ms": round((time.time() - t0) * 1000, 1),
-                    "details": checks,
+                    "details": {**checks, "channel": "mcp", "error": msg},
                 }
             self._last_verify = result
             return result
@@ -519,14 +692,62 @@ class FengshenBiProvider(DataSourceProvider):
         except urllib.error.URLError as e:
             raise RuntimeError(f"风神 BI API 网络错误: {e.reason}")
 
-    # ---------------- 风神 MCP 客户端（取数真实通道，标准 MCP JSON-RPC） ----------------
-    def _mcp_authorization(self) -> str:
-        """MCP 工具按「用户 JWT」鉴权（文档中的 Authorization 入参）。
+    # ---------------- 风神 MCP 客户端（取数真实通道，标准 MCP SSE + JSON-RPC） ----------------
+    def _fetch_mcp_jwt(self) -> str:
+        """获取风神调用方用户 JWT（裸 token，不含 Bearer 前缀）。
 
-        优先使用用户 JWT（按该用户数据权限返回）；未配置则回退静态 token。
-        clientId/clientSecret 为应用级凭证，随请求头提交给网关（头名待联调对齐）。
+        - 若配置了静态 FENGSHEN_BI_USER_JWT，直接使用（去掉可能的 Bearer 前缀）；
+        - 否则用 clientId/clientSecret + proxyUser 调 jwtToken 接口动态换取，内存缓存至临近过期。
+        文档：POST /aeolus/api/v3/openapi/jwtToken，body.metadata={clientId,clientSecret,proxyUser,expire}。
         """
-        return self._cfg("user_jwt") or self._cfg("token")
+        static = self._cfg("user_jwt")
+        if static:
+            return static[7:] if static.lower().startswith("bearer ") else static
+        if self._mcp_jwt and time.time() < self._mcp_jwt_expire_at:
+            return self._mcp_jwt
+        cid = self._cfg("client_id")
+        csec = self._cfg("client_secret")
+        user = self._cfg("proxy_user")
+        if not (cid and csec and user):
+            raise RuntimeError(
+                "风神 MCP 鉴权未配置完整：需 FENGSHEN_BI_CLIENT_ID / CLIENT_SECRET / PROXY_USER"
+                "（用于动态换取用户 JWT），或直接配置 FENGSHEN_BI_USER_JWT")
+        body = {"metadata": {"clientId": cid, "clientSecret": csec,
+                             "proxyUser": user, "expire": MCP_JWT_EXPIRE}}
+        req = urllib.request.Request(
+            MCP_JWT_URL, data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Cookie": "locale=zh-cn"}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                d = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", "ignore")[:200]
+            except Exception:
+                pass
+            raise RuntimeError(f"风神 JWT 换取失败 HTTP {e.code}: {detail}")
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"风神 JWT 换取网络错误（需在字节内网）: {e.reason}")
+        jwt = (d.get("data") or {}).get("jwtToken", "") if isinstance(d, dict) else ""
+        if not jwt:
+            code = d.get("code") if isinstance(d, dict) else ""
+            msg = d.get("msg") if isinstance(d, dict) else d
+            raise RuntimeError(f"风神 JWT 换取失败：{code} {msg}")
+        self._mcp_jwt = jwt
+        self._mcp_jwt_expire_at = time.time() + max(60, MCP_JWT_EXPIRE - 120)
+        return jwt
+
+    def _mcp_authorization(self) -> str:
+        """MCP 工具入参 Authorization：文档要求「Bearer <jwtToken>」。"""
+        return "Bearer " + self._fetch_mcp_jwt()
+
+    def _get_mcp_session(self) -> "_McpSseSession":
+        """获取（懒加载并复用）进程内的 MCP SSE 长连接会话。"""
+        with self._mcp_session_lock:
+            if self._mcp_session is None:
+                self._mcp_session = _McpSseSession(self._mcp_gateway())
+            return self._mcp_session
 
     def _mcp_throttle(self) -> None:
         """进程内节流：风神 MCP 约束 QPM ≤ 3（每分钟最多 3 次），超量会被拒绝。
@@ -550,62 +771,26 @@ class FengshenBiProvider(DataSourceProvider):
 
         capability 为本 provider 内部能力键（list_datasets/get_schema/run_query），
         自动映射到 MCP_TOOLS 中的真实工具名与入参。传输方式：
-          - 配置了 FENGSHEN_BI_MCP_GATEWAY_URL → 标准 MCP JSON-RPC over HTTP(S)；
-          - 否则走内网 PSM（byted_mcp_client，仅字节内网，公网不可达）。
+          - SSE 网关（官方默认地址，字节内网可达）→ _McpSseSession（GET /sse + POST /message）；
+          - 显式内网 SDK 部署可走 PSM（byted_mcp_client，公网不可达）。
         """
         spec = MCP_TOOLS.get(capability)
         if not spec:
             raise RuntimeError(f"未知风神 MCP 能力：{capability}")
         tool = str(spec["tool"])
-        if self._mcp_gateway():
-            return self._call_mcp_via_gateway(tool, arguments)
-        return self._call_mcp_via_psm(tool, arguments)
+        return self._call_mcp_via_gateway(tool, arguments)
 
     def _call_mcp_via_gateway(self, tool: str, arguments: dict[str, Any]) -> Any:
-        """通过 MCP over HTTP(S) 网关调用（标准库 urllib，无第三方依赖）。
+        """通过 MCP SSE 网关调用工具（标准库，无第三方依赖）。
 
-        采用 MCP 规范的 JSON-RPC 2.0 tools/call；部分网关为 Streamable HTTP，
-        响应可能是 text/event-stream（SSE），_parse_mcp_response 已兼容。
-        TODO(内网联调): 网关若要求先 initialize 握手 / 特定鉴权头，在此补齐。
+        JWT 以工具入参 Authorization（Bearer <jwt>）传递；调用处通常已填，此处兜底。
         """
         self._mcp_throttle()
-        self._mcp_rpc_id += 1
-        payload = {
-            "jsonrpc": "2.0",
-            "id": self._mcp_rpc_id,
-            "method": "tools/call",
-            "params": {"name": tool, "arguments": arguments},
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
-        auth = self._mcp_authorization()
-        if auth:
-            headers["Authorization"] = auth if auth.lower().startswith("bearer ") else f"Bearer {auth}"
-        # 应用级凭证 / sophon key 随头提交（具体头名以网关约定为准，待联调）
-        if self._cfg("client_id"):
-            headers["X-Client-Id"] = self._cfg("client_id")
-        if self._cfg("client_secret"):
-            headers["X-Client-Secret"] = self._cfg("client_secret")
-        if self._cfg("sophon_api_key"):
-            headers["X-Sophon-Api-Key"] = self._cfg("sophon_api_key")
-
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(self._mcp_gateway(), data=data, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=int(os.environ.get("LLM_TIMEOUT", "60"))) as r:
-                raw = r.read().decode("utf-8", "ignore")
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8", "ignore")[:300]
-            except Exception:
-                pass
-            raise RuntimeError(f"风神 MCP 网关 HTTP {e.code}: {detail}")
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"风神 MCP 网关网络错误: {e.reason}")
-        return self._parse_mcp_response(raw, tool)
+        args = dict(arguments or {})
+        args.setdefault("Authorization", self._mcp_authorization())
+        timeout = float(os.environ.get("FENGSHEN_MCP_TIMEOUT", "120"))
+        result = self._get_mcp_session().call_tool(tool, args, timeout=timeout)
+        return self._parse_mcp_result(result, tool)
 
     def _call_mcp_via_psm(self, tool: str, arguments: dict[str, Any]) -> Any:
         """内网 PSM 方式：依赖字节内网 byted_mcp_client（公网 ECS 不可装/不可达）。
@@ -622,51 +807,36 @@ class FengshenBiProvider(DataSourceProvider):
             "或配置可达的 FENGSHEN_BI_MCP_GATEWAY_URL 走 HTTP 网关。"
         )
 
-    def _parse_mcp_response(self, raw: str, tool: str) -> Any:
-        """解析 MCP JSON-RPC 响应（兼容普通 JSON 与 SSE 流），返回工具业务数据。"""
-        obj = self._loads_mcp(raw)
-        if not isinstance(obj, dict):
-            return obj
-        if obj.get("error"):
-            err = obj["error"]
-            msg = err.get("message") if isinstance(err, dict) else str(err)
-            raise RuntimeError(f"风神 MCP 工具 {tool} 返回错误：{msg}")
-        result = obj.get("result", obj)
+    def _parse_mcp_result(self, result: Any, tool: str) -> Any:
+        """解析 tools/call 的 result（SSE 回推的 JSON-RPC result 字段），返回工具业务数据。
+
+        MCP 工具结果统一放在 result.content[*].text（文本块，通常为 JSON 字符串）。
+        风神业务响应统一为信封 {"code": "aeolus/ok"|"aeolus/...", "data": ..., "msg": ...}：
+        非 ok 的 code（如 userNotInWhiteList=未开通邀测）抛错，交由上层回退 Mock / 返回错误。
+        """
         if isinstance(result, dict) and result.get("isError"):
             raise RuntimeError(f"风神 MCP 工具 {tool} 执行失败：{result.get('content')}")
-        # MCP 工具结果统一放在 result.content[*].text（文本块，通常为 JSON 字符串）
         content = result.get("content") if isinstance(result, dict) else None
+        parsed: Any = None
         if isinstance(content, list):
             texts = [c.get("text", "") for c in content
                      if isinstance(c, dict) and c.get("type") == "text"]
-            joined = "\n".join(t for t in texts if t)
+            joined = "\n".join(t for t in texts if t).strip()
             if joined:
                 try:
-                    return json.loads(joined)
+                    parsed = json.loads(joined)
                 except Exception:
                     return {"text": joined}
-        # 部分网关直接返回业务 JSON
-        return result.get("data", result) if isinstance(result, dict) else result
-
-    @staticmethod
-    def _loads_mcp(raw: str) -> Any:
-        """从 MCP 响应文本加载 JSON：优先整体解析，失败则按 SSE 的 data: 行解析。"""
-        raw = (raw or "").strip()
-        if not raw:
-            return {}
-        if raw.startswith("{"):
-            try:
-                return json.loads(raw)
-            except Exception:
-                pass
-        data_lines = [ln[5:].strip() for ln in raw.splitlines()
-                      if ln.startswith("data:") and ln[5:].strip()]
-        for ln in reversed(data_lines):
-            try:
-                return json.loads(ln)
-            except Exception:
-                continue
-        return {}
+        if parsed is None:
+            # 部分网关直接返回业务 JSON
+            return result.get("data", result) if isinstance(result, dict) else result
+        # 风神业务信封：code != aeolus/ok 视为业务错误（白名单/权限/参数等）
+        if isinstance(parsed, dict) and "code" in parsed:
+            code = parsed.get("code")
+            if code not in ("aeolus/ok", 0, "0", "success", "Success", None):
+                raise RuntimeError(f"风神 MCP 业务错误 {code}：{parsed.get('msg', '')}")
+            return parsed.get("data", parsed)
+        return parsed
 
     # ---------------- 风神 MCP SQL 规范转译（标准 SQL → `[数据集ID]`/`[列ID]` 方言） ----------------
     def _to_aeolus_sql(self, sql: str, dataset_id: str, schema: dict[str, Any]) -> str:
@@ -870,14 +1040,21 @@ class FengshenBiProvider(DataSourceProvider):
     def list_datasets(self) -> list[dict[str, Any]]:
         # 1) 风神 MCP 真实通道：get_data_set_by_appid(appId, Authorization)
         if self._mcp_ready():
-            resp = self._call_mcp_tool("list_datasets", {
-                "appId": self._mcp_app_id(),
-                "Authorization": self._mcp_authorization(),
-            })
-            data = resp.get("data", resp) if isinstance(resp, dict) else resp
-            items = (data.get("datasets") or data.get("list") or data.get("dataSets")
-                     or (data if isinstance(data, list) else []))
-            return [self._map_dataset(it) for it in items if isinstance(it, dict)]
+            try:
+                resp = self._call_mcp_tool("list_datasets", {
+                    "appId": self._mcp_app_id(),
+                    "Authorization": self._mcp_authorization(),
+                })
+                data = resp.get("data", resp) if isinstance(resp, dict) else resp
+                items = (data.get("datasets") or data.get("list") or data.get("dataSets")
+                         or data.get("data_set_list") or data.get("dataSetList")
+                         or (data if isinstance(data, list) else []))
+                mapped = [self._map_dataset(it) for it in items if isinstance(it, dict)]
+                self._mcp_last_error = ""
+                return mapped
+            except Exception as e:
+                # 未开通邀测 / 网络不通 / appId 无权限：不伪造为真实，回退 Mock 并记录原因
+                self._mcp_last_error = f"{type(e).__name__}: {e}"
         # 2) OpenAPI REST（未来开放取数时）
         if self._rest_ready() and self.is_available:
             resp = self._raw_request("GET", API_ENDPOINTS["datasets"],
@@ -891,26 +1068,43 @@ class FengshenBiProvider(DataSourceProvider):
     def get_dataset_schema(self, dataset_id: str) -> dict[str, Any]:
         # 1) 风神 MCP 真实通道：get_schema(dataset_id, Authorization)
         if self._mcp_ready():
-            resp = self._call_mcp_tool("get_schema", {
-                "dataset_id": dataset_id,
-                "Authorization": self._mcp_authorization(),
-            })
-            schema = self._map_schema(dataset_id, resp if isinstance(resp, dict) else {"data": resp})
-            schema["mock"] = False
-            schema["channel"] = "mcp"
-            return schema
+            try:
+                resp = self._call_mcp_tool("get_schema", {
+                    "dataset_id": dataset_id,
+                    "Authorization": self._mcp_authorization(),
+                })
+                schema = self._map_schema(dataset_id, resp if isinstance(resp, dict) else {"data": resp})
+                schema["mock"] = False
+                schema["channel"] = "mcp"
+                self._mcp_last_error = ""
+                return schema
+            except Exception as e:
+                # 邀测白名单未开通 / 网络不通 / 无权限：记录原因，回退 Mock（下方统一处理）
+                self._mcp_last_error = f"{type(e).__name__}: {e}"
         # 2) OpenAPI REST
         if self._rest_ready() and self.is_available:
             path = API_ENDPOINTS["dataset_schema"].replace("{id}", dataset_id)
             resp = self._raw_request("GET", path,
                                      params={"workspace_id": self._cfg("workspace_id") or None})
             return self._map_schema(dataset_id, resp)
-        # 3) Mock 演示
+        # 3) Mock 演示（含 MCP 静态就绪但真实调用失败后的诚实回退）
+        fell_back = self._mcp_ready() and bool(self._mcp_last_error)
         cols = self._mock_schema(dataset_id)
         if not cols:
-            return {"id": dataset_id, "name": dataset_id, "columns": [], "error": "数据集不存在（Mock）"}
+            schema = {"id": dataset_id, "name": dataset_id, "columns": [], "mock": True,
+                      "pending_integration": fell_back,
+                      "error": "数据集不存在或无法从风神获取真实 Schema（当前为 Mock 回退）"}
+            if fell_back:
+                schema["channel"] = "mcp"
+                schema["mock_note"] = self._fallback_note()
+            return schema
         ds = next((d for d in self._mock_datasets() if d["id"] == dataset_id), {})
-        return {"id": dataset_id, "name": ds.get("name", dataset_id), "columns": cols, "mock": True}
+        schema = {"id": dataset_id, "name": ds.get("name", dataset_id), "columns": cols, "mock": True}
+        if fell_back:
+            schema["pending_integration"] = True
+            schema["channel"] = "mcp"
+            schema["mock_note"] = self._fallback_note()
+        return schema
 
     def preview_dataset(self, dataset_id: str, limit: int = 20) -> dict[str, Any]:
         # 风神 MCP 仅 3 个数据集工具（列表/schema/SQL 取数），无独立预览接口
@@ -952,6 +1146,9 @@ class FengshenBiProvider(DataSourceProvider):
                         "elapsed_ms": round((time.time() - start) * 1000, 1), "channel": "mcp"}
             try:
                 schema = self.get_dataset_schema(ds_id)  # 真实 MCP get_schema
+                if schema.get("mock"):
+                    # schema 已回退 Mock（白名单/网络），无法拿到真实列 ID 做方言转译
+                    raise RuntimeError("真实 Schema 获取失败（已回退 Mock），无法转译风神 SQL")
                 aeolus_sql = self._to_aeolus_sql(sql, ds_id, schema)
                 resp = self._call_mcp_tool("run_query", {
                     "dataSetId": ds_id,
@@ -964,11 +1161,13 @@ class FengshenBiProvider(DataSourceProvider):
                 result["channel"] = "mcp"
                 result["dataset_id"] = ds_id
                 result["transpiled_sql"] = aeolus_sql  # 回传转译后的风神 SQL，便于审计/展示
+                self._mcp_last_error = ""
                 return result
             except Exception as e:
-                return {"success": False, "columns": [], "rows": [], "row_count": 0,
-                        "error": f"风神 MCP 查询失败：{type(e).__name__}: {e}",
-                        "elapsed_ms": round((time.time() - start) * 1000, 1), "channel": "mcp"}
+                # 邀测白名单 / 网络 / 超时：不伪造真实、也不硬报错中断演示链路，
+                # 记录原因后回退 Mock（下方第 3 步统一处理）。保留 get_schema 已写入的深层原因。
+                if not self._mcp_last_error:
+                    self._mcp_last_error = f"{type(e).__name__}: {e}"
 
         # 2) OpenAPI REST 查询代理（未来开放取数时）
         if self._rest_ready() and self.is_available:
@@ -988,12 +1187,18 @@ class FengshenBiProvider(DataSourceProvider):
                         "error": f"风神 BI 查询失败：{e}",
                         "elapsed_ms": round((time.time() - start) * 1000, 1)}
 
-        # 3) 已配置凭证但取数通道未就绪 → 不伪造真实取数，回退模拟结果并标注「待内网联调」，
-        #    保证「配置 → 验证 → 浏览 → SQL 确认 → 执行」整条演示链路可跑通。
+        # 3) 已配置凭证但取数未成功（通道未就绪，或 MCP 真实调用失败：白名单/网络）→
+        #    不伪造真实取数，回退模拟结果并诚实标注，保证「配置→验证→浏览→SQL 确认→执行」
+        #    整条演示链路可跑通。
         if self.is_available:
             result = self._mock_query_result(sql, start)
             result["pending_integration"] = True
-            if self._mcp_has_cred():
+            result["mock"] = True
+            if self._mcp_ready() and self._mcp_last_error:
+                # MCP 静态就绪但本次真实调用失败（如邀测白名单未开通）→ 用真实原因引导
+                result["channel"] = "mcp"
+                result["mock_note"] = self._fallback_note()
+            elif self._mcp_has_cred():
                 result["mock_note"] = (
                     "风神 MCP 凭证已配置，但取数服务仅字节内网可达（byted_mcp_client/PSM），"
                     "当前环境未配置 MCP HTTP 网关（FENGSHEN_BI_MCP_GATEWAY_URL），暂无法真实取数；"
