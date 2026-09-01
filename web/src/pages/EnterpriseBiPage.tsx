@@ -4,10 +4,7 @@ import {
   Target, Clock, Tag, Database, ShieldCheck, RefreshCw, Lightbulb, Table2,
   AtSign, Paperclip, Settings, ChevronDown, Plus, ChevronRight, ArrowUpRight, Sparkles,
 } from 'lucide-react';
-import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer,
-} from 'recharts';
+import ResultChart from '../components/common/ResultChart';
 import { useApp } from '../store/ChatContext';
 
 // ==================== 类型定义（与后端 /api/enterprise-bi/* 契约对齐） ====================
@@ -91,18 +88,23 @@ const BUSINESS_LINES = [
 const GRADIENT_BTN = 'linear-gradient(135deg, #B758ED 0%, #D645D2 100%)';
 
 // 连接状态 → 展示样式
+// 五态命名与首页 / 设置页「系统状态与审计」保持完全一致
 const STATUS_STYLE: Record<string, { bg: string; color: string; label: string }> = {
-  mock: { bg: '#FFF7E6', color: '#B25E00', label: 'Mock 演示模式' },
+  mock: { bg: '#FFF7E6', color: '#B25E00', label: 'Mock 演示' },
   unconfigured: { bg: '#F5F6F8', color: '#898B8F', label: '未配置' },
   configured: { bg: '#E8F3FF', color: '#1E6FFF', label: '已配置 · 待联调' },
   verified: { bg: '#EAFBF1', color: '#0F8A2F', label: '凭证已验证' },
   real_ready: { bg: '#EAFBF1', color: '#0F8A2F', label: '真实可用' },
 };
 
+// SQL 草案来源（与后端 sql_source 字段对齐，本地问数与企业 BI 共用一套命名）
 const SQL_SOURCE_LABEL: Record<string, string> = {
   'semantic-llm': '语义层 + LLM 生成',
+  'llm': '语义层 + LLM 生成',
   'preset-bank': '内置语义题库',
   'dimension-template': '维度下钻模板',
+  'bank_fallback': '标准口径题库兜底',
+  'template': '兜底模板',
   'fallback': '兜底模板',
 };
 
@@ -682,8 +684,8 @@ function ResultCard({ confirm, onReset }: { confirm: ConfirmResponse; onReset: (
         </div>
       ) : (
         <>
-          {/* 可视化区 */}
-          <ChartArea type={chart_suggestion.type} data={data} columns={result.columns} xField={chart_suggestion.xField} />
+          {/* 可视化区（第三轮起与聊天结果工作台共用 ResultChart 组件） */}
+          <ResultChart type={chart_suggestion.type} data={data} columns={result.columns} xField={chart_suggestion.xField} />
 
           {/* 图表建议说明 */}
           <p className="text-[11.5px] m-0 mt-2 mb-4" style={{ color: '#898B8F' }}>
@@ -752,63 +754,4 @@ function ResultCard({ confirm, onReset }: { confirm: ConfirmResponse; onReset: (
       </div>
     </div>
   );
-}
-
-// ==================== 图表渲染（KPI / 柱状 / 折线 / 表格兜底） ====================
-function ChartArea({ type, data, columns, xField }: {
-  type: string; data: Record<string, any>[]; columns: string[]; xField?: string;
-}) {
-  if (!data.length) return <p style={{ fontSize: 12.5, color: '#898B8F' }}>无结果数据。</p>;
-
-  // KPI 单值卡
-  if (type === 'kpi') {
-    const val = data[0][columns[0]];
-    return (
-      <div style={{ background: 'linear-gradient(135deg, #FBF7FF, #F5F0FF)', border: '1px solid #E6D3FA', borderRadius: 4, padding: '28px 24px', textAlign: 'center' }}>
-        <div style={{ fontSize: 12, color: '#898B8F', marginBottom: 8, fontFamily: 'var(--font-mono)' }}>{columns[0]}</div>
-        <div style={{ fontSize: 34, fontWeight: 700, color: '#B758ED', fontFamily: 'var(--font-mono)', lineHeight: 1.1 }}>
-          {typeof val === 'number' ? val.toLocaleString() : String(val)}
-        </div>
-      </div>
-    );
-  }
-
-  const xKey = xField || columns[0];
-  // 数值列（除 X 轴外）作为度量
-  const metricCols = columns.filter(c => c !== xKey).filter(c =>
-    data.every(row => typeof row[c] === 'number' || row[c] === null));
-
-  if ((type === 'bar' || type === 'line') && metricCols.length) {
-    const COLORS = ['#B758ED', '#1E6FFF', '#00B42A', '#FF7D00'];
-    return (
-      <div style={{ width: '100%', height: 280 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          {type === 'bar' ? (
-            <BarChart data={data} margin={{ top: 10, right: 16, left: 8, bottom: 4 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F0F1F3" />
-              <XAxis dataKey={xKey} tick={{ fontSize: 11, fill: '#898B8F' }} />
-              <YAxis tick={{ fontSize: 11, fill: '#898B8F' }} />
-              <Tooltip />
-              {metricCols.map((c, i) => (
-                <Bar key={c} dataKey={c} fill={COLORS[i % COLORS.length]} radius={[3, 3, 0, 0]} />
-              ))}
-            </BarChart>
-          ) : (
-            <LineChart data={data} margin={{ top: 10, right: 16, left: 8, bottom: 4 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F0F1F3" />
-              <XAxis dataKey={xKey} tick={{ fontSize: 11, fill: '#898B8F' }} />
-              <YAxis tick={{ fontSize: 11, fill: '#898B8F' }} />
-              <Tooltip />
-              {metricCols.map((c, i) => (
-                <Line key={c} type="monotone" dataKey={c} stroke={COLORS[i % COLORS.length]} strokeWidth={2} dot={{ r: 3 }} />
-              ))}
-            </LineChart>
-          )}
-        </ResponsiveContainer>
-      </div>
-    );
-  }
-
-  // 兜底：不额外渲染（下方有明细表格）
-  return null;
 }

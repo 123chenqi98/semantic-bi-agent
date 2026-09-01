@@ -83,6 +83,33 @@ export interface AIMessage {
   baselinePrompt?: string;
   experimentPrompt?: string;
   streamingStatus?: string;
+  degraded?: boolean;
+  retryable?: boolean;
+  // 分阶段问数（需求确认 → SQL 草案 → 确认 → 执行）
+  stage?: 'planning' | 'draft' | 'executing' | 'done';
+  planId?: string;
+  clarifications?: string[];
+  assumptions?: string[];
+  filters?: string[];
+  sqlSource?: string;
+  datasetName?: string;
+  confirmError?: string;
+  suggestions?: string[];
+  // 第三轮：结果工作台结构化分区字段
+  conclusion?: string;
+  findings?: string[];
+  chartSpec?: { type: string; xField?: string; reason?: string };
+  warnings?: string[];
+  provenance?: {
+    dataset: string;
+    timeRange?: string;
+    fixedFilters?: string[];
+    executionMode?: string;
+    stagedConfirm?: boolean;
+    bankFallback?: boolean;
+    mockMode?: boolean;
+  };
+  usageVerdict?: { usable: boolean; label: string; reason: string };
 }
 
 // 用户消息
@@ -105,7 +132,7 @@ export interface Conversation {
 }
 
 // 导航页面类型
-export type PageType = 'chat' | 'chartAssistant' | 'dictionary' | 'evaluation' | 'settings' | 'semanticEditor' | 'enterpriseBi';
+export type PageType = 'home' | 'chat' | 'chartAssistant' | 'dictionary' | 'evaluation' | 'settings' | 'semanticEditor' | 'enterpriseBi';
 
 // 实验评测结果
 export interface EvaluationResult {

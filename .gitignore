@@ -12,6 +12,9 @@ venv/
 outputs/*.html
 outputs/*.json
 
+# 运行时日志（第五轮：审计 JSONL 事件落盘目录，不入库）
+logs/
+
 # OS
 .DS_Store
 

@@ -1,16 +1,23 @@
-import { MessageSquarePlus } from 'lucide-react';
-import { quickQuestions } from '../../mock/data';
+import { MessageSquarePlus, TrendingUp, LineChart, ShieldCheck } from 'lucide-react';
+import { exampleGroups } from '../../mock/data';
 
 interface WelcomePageProps {
   onSelectQuestion: (q: string) => void;
 }
 
+// 分组图标：业务问数 / 趋势分析 / 结果追问与图表
+function GroupIcon({ groupKey }: { groupKey: string }) {
+  if (groupKey === 'trend') return <TrendingUp size={14} style={{ color: '#B758ED', flexShrink: 0 }} />;
+  if (groupKey === 'followup') return <LineChart size={14} style={{ color: '#B758ED', flexShrink: 0 }} />;
+  return <MessageSquarePlus size={14} style={{ color: '#B758ED', flexShrink: 0 }} />;
+}
+
 export default function WelcomePage({ onSelectQuestion }: WelcomePageProps) {
   return (
     <div className="flex-1 overflow-y-auto">
-      <div style={{ maxWidth: 880, margin: '0 auto', padding: '88px 48px 56px 48px' }}>
+      <div style={{ maxWidth: 760, margin: '0 auto', padding: '64px 48px 56px 48px' }}>
         {/* Hero 区 */}
-        <div className="flex flex-col items-center text-center mb-14">
+        <div className="flex flex-col items-center text-center mb-10">
           <div
             className="mb-4 inline-flex items-center"
             style={{
@@ -27,98 +34,93 @@ export default function WelcomePage({ onSelectQuestion }: WelcomePageProps) {
           >
             语义增强型经营分析助手
           </div>
-          <div
-            className="flex items-center justify-center mb-5"
-            style={{
-              width: 48,
-              height: 48,
-              background: '#B758ED',
-              borderRadius: 14,
-            }}
-          >
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2L2 7l10 5 10-5-10-5z" />
-              <path d="M2 17l10 5 10-5" />
-              <path d="M2 12l10 5 10-5" />
-            </svg>
-          </div>
           <h1
             className="mb-3"
-            style={{ fontSize: 28, fontWeight: 600, color: '#252931', letterSpacing: '-0.03em', lineHeight: 1.15 }}
+            style={{ fontSize: 26, fontWeight: 600, color: '#252931', letterSpacing: '-0.03em', lineHeight: 1.15 }}
           >
-            你好，我是 NoSQL
+            用一句话，完成一次经营分析
           </h1>
           <p
-            className="text-[14px]"
-            style={{ color: '#565960', lineHeight: 1.85, maxWidth: 620 }}
+            className="text-[13.5px]"
+            style={{ color: '#565960', lineHeight: 1.85, maxWidth: 600 }}
           >
-            基于指标语义层增强的经营分析智能助手。用自然语言提问即可获得准确的 SQL 查询与业务洞察，
-            相比普通 Text-to-SQL 系统，结果正确率从 44% 提升至 100%。
+            自然语言提问即可：系统先对齐需求与 SQL 口径，<b>您确认后才执行查询</b>，
+            结果以结构化分析工作台呈现，支持追问、导出与图表生成。
           </p>
+          <div
+            className="inline-flex items-center gap-1.5 mt-4"
+            style={{ fontSize: 12, color: '#6D39C7', background: '#F5F0FF', border: '1px solid #E6D3FA', borderRadius: 999, padding: '5px 14px' }}
+          >
+            <ShieldCheck size={13} />
+            全程只读查询 · SQL 需确认后执行 · 当前数据源：本地零售数据集（真实可查）
+          </div>
         </div>
 
-        {/* 快速提问区 */}
-        <div className="mb-4 flex items-center gap-3">
-          <div style={{ flex: 1, height: 1, background: '#F1F2F3' }} />
-          <span style={{ fontSize: 12, color: '#898B8F', fontWeight: 500, letterSpacing: '0.02em' }}>
-            试试这些问题
-          </span>
-          <div style={{ flex: 1, height: 1, background: '#F1F2F3' }} />
-        </div>
-
-        <div className="w-full" style={{ maxWidth: 652, margin: '0 auto', display: 'flex', flexDirection: 'column', rowGap: 8 }}>
-          {quickQuestions.map((q, i) => (
-            <button
-              key={i}
-              onClick={() => onSelectQuestion(q)}
-              className="text-left"
-              style={{
-                padding: '14px 16px',
-                background: '#FFFFFF',
-                border: '1px solid #F1F2F3',
-                borderRadius: 4,
-                color: '#252931',
-                fontSize: 14,
-                lineHeight: 1.6,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 12,
-                transition: 'background .15s, border-color .15s',
-                outline: 'none',
-              }}
-              onMouseEnter={e => {
-                e.currentTarget.style.background = '#FBF9FE';
-                e.currentTarget.style.borderColor = '#D9BAF7';
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.background = '#FFFFFF';
-                e.currentTarget.style.borderColor = '#F1F2F3';
-              }}
-            >
-              <span className="flex items-start gap-3">
-                <MessageSquarePlus
-                  size={15}
-                  style={{ color: '#B758ED', flexShrink: 0, marginTop: 2 }}
-                />
-                <span>{q}</span>
-              </span>
-              <span
-                style={{
-                  color: '#B0B5BD',
-                  fontSize: 12,
-                  flexShrink: 0,
-                  marginLeft: 8,
-                }}
-              >
-                立即提问
-              </span>
-            </button>
+        {/* 三类典型任务示例 */}
+        <div className="w-full" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {exampleGroups.map(group => (
+            <div key={group.key}>
+              <div className="flex items-center gap-2 mb-2">
+                <GroupIcon groupKey={group.key} />
+                <span style={{ fontSize: 13, fontWeight: 600, color: '#252931' }}>{group.title}</span>
+                <span style={{ fontSize: 11.5, color: '#B0B5BD' }}>{group.desc}</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', rowGap: 8 }}>
+                {group.items.map((item, i) => (
+                  <button
+                    key={i}
+                    onClick={() => onSelectQuestion(item.q)}
+                    className="text-left"
+                    style={{
+                      padding: '12px 16px',
+                      background: '#FFFFFF',
+                      border: '1px solid #F1F2F3',
+                      borderRadius: 4,
+                      color: '#252931',
+                      fontSize: 13.5,
+                      lineHeight: 1.6,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      transition: 'background .15s, border-color .15s',
+                      outline: 'none',
+                      cursor: 'pointer',
+                    }}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.background = '#FBF9FE';
+                      e.currentTarget.style.borderColor = '#D9BAF7';
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.background = '#FFFFFF';
+                      e.currentTarget.style.borderColor = '#F1F2F3';
+                    }}
+                  >
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: 'block', fontWeight: 500 }}>{item.q}</span>
+                      <span style={{ display: 'block', fontSize: 11.5, color: '#B0B5BD', marginTop: 2 }}>
+                        {item.metric} · {item.period}
+                      </span>
+                    </span>
+                    <span
+                      style={{
+                        color: '#B0B5BD',
+                        fontSize: 12,
+                        flexShrink: 0,
+                        marginLeft: 8,
+                      }}
+                    >
+                      立即提问
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
 
-        <p className="text-center text-[12px] mt-9" style={{ color: '#B0B5BD' }}>
-          点击任意预设问题即可开始对比体验，或在下方输入框直接提问
+        <p className="text-center text-[12px] mt-8" style={{ color: '#B0B5BD' }}>
+          点击任意示例即可开始，或在下方输入框直接提出你的业务问题
         </p>
       </div>
     </div>

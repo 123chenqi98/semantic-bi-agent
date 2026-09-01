@@ -9,6 +9,8 @@ interface AppState {
   showBaselineCompare: boolean;
   pendingChartPayload: ChartPendingPayload | null;
   pendingDictQuery: string | null;
+  // 第四轮：工作台首页「立即提问」跨页携带的问题，ChatPage 挂载后自动发送并清空
+  pendingChatQuestion: string | null;
 }
 
 type AppAction =
@@ -22,7 +24,8 @@ type AppAction =
   | { type: 'DELETE_CONVERSATION'; payload: string }
   | { type: 'LOAD_STATE'; payload: AppState }
   | { type: 'SET_CHART_PAYLOAD'; payload: ChartPendingPayload | null }
-  | { type: 'SET_DICT_QUERY'; payload: string | null };
+  | { type: 'SET_DICT_QUERY'; payload: string | null }
+  | { type: 'SET_CHAT_QUESTION'; payload: string | null };
 
 const STORAGE_KEY = 'nosql-chat-state';
 
@@ -41,13 +44,14 @@ function createNewConversation(): Conversation {
 }
 
 const initialState: AppState = {
-  currentPage: 'chat',
+  currentPage: 'home',
   conversations: [createNewConversation()],
   currentConversationId: '',
   isLoading: false,
   showBaselineCompare: true,
   pendingChartPayload: null,
   pendingDictQuery: null,
+  pendingChatQuestion: null,
 };
 
 function appReducer(state: AppState, action: AppAction): AppState {
@@ -123,13 +127,17 @@ function appReducer(state: AppState, action: AppAction): AppState {
     }
 
     case 'LOAD_STATE':
-      return { ...action.payload, pendingChartPayload: null, pendingDictQuery: null };
+      // 第四轮：历史持久化中可能没有 home 页签，统一落地到工作台首页；临时跨页字段不恢复
+      return { ...action.payload, currentPage: 'home', pendingChartPayload: null, pendingDictQuery: null, pendingChatQuestion: null };
 
     case 'SET_CHART_PAYLOAD':
       return { ...state, pendingChartPayload: action.payload };
 
     case 'SET_DICT_QUERY':
       return { ...state, pendingDictQuery: action.payload };
+
+    case 'SET_CHAT_QUESTION':
+      return { ...state, pendingChatQuestion: action.payload };
 
     default:
       return state;
@@ -160,11 +168,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'SELECT_CONVERSATION', payload: state.conversations[0].id });
   }, []);
 
-  // 持久化到localStorage（排除临时 pending 字段和 isLoading）
+  // 持久化到localStorage（排除临时 pending 字段和 isLoading；每次打开都从工作台首页进入）
   useEffect(() => {
     if (state.currentConversationId) {
-      const { pendingChartPayload, pendingDictQuery, isLoading, ...rest } = state;
-      void pendingChartPayload; void pendingDictQuery; void isLoading;
+      const { pendingChartPayload, pendingDictQuery, pendingChatQuestion, isLoading, currentPage, ...rest } = state;
+      void pendingChartPayload; void pendingDictQuery; void pendingChatQuestion; void isLoading; void currentPage;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(rest));
     }
   }, [state]);

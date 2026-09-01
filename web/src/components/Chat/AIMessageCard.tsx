@@ -1,15 +1,26 @@
 import { useState, Fragment } from 'react';
-import { Sparkles, Lightbulb, BookOpen, Clock, Code2, AlertTriangle, HelpCircle, BarChart3, FlaskConical, Trash2, Zap, ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, Cpu, GitBranch, Calendar, ShieldCheck, Database } from 'lucide-react';
+import { Sparkles, Lightbulb, BookOpen, Clock, Code2, AlertTriangle, HelpCircle, BarChart3, FlaskConical, Trash2, Zap, ChevronDown, ChevronRight, Activity, CheckCircle2, XCircle, Cpu, GitBranch, Calendar, ShieldCheck, Database, RefreshCw, Target, Tag, MessageSquare } from 'lucide-react';
 import SQLBlock from '../common/SQLBlock';
 import SQLDiff from '../common/SQLDiff';
-import ResultTable from '../common/ResultTable';
+import ResultWorkbench from './ResultWorkbench';
 import PromptViewer from '../common/PromptViewer';
 import type { AIMessage as AIMessageType } from '../../types';
 import { useApp } from '../../store/ChatContext';
 
 interface AIMessageCardProps {
   message: AIMessageType;
+  onRetry?: (question: string) => void;
+  onConfirm?: (planId: string) => void;
+  onAsk?: (question: string) => void;
 }
+
+// 草案来源标签（与后端 sql_source 对齐）
+const SQL_SOURCE_LABEL: Record<string, string> = {
+  'semantic-llm': '语义层 + LLM 生成',
+  'preset-bank': '内置语义题库',
+  'dimension-template': '维度下钻模板',
+  fallback: '兜底模板',
+};
 
 const SKILL_PILL: Record<string, { label: string; bg: string; color: string; icon: React.ReactNode }> = {
   time: { label: '时间解析增强', bg: '#E8F4FD', color: '#1677FF', icon: <Clock size={11} /> },
@@ -128,7 +139,7 @@ function DictCard({ metric }: { metric: NonNullable<AIMessageType['dictResult']>
   );
 }
 
-export default function AIMessageCard({ message }: AIMessageCardProps) {
+export default function AIMessageCard({ message, onRetry, onConfirm, onAsk }: AIMessageCardProps) {
   const { state } = useApp();
   const forceShowBaseline = message.skillTags?.includes('sql');
   const showBaseline = state.showBaselineCompare || forceShowBaseline;
@@ -214,29 +225,72 @@ export default function AIMessageCard({ message }: AIMessageCardProps) {
           </div>
         )}
 
+        {/* 后端不可达降级提示 + 手动重试（错误恢复闭环） */}
+        {message.degraded && !message.isLoading && (
+          <div style={{
+            marginBottom: 12, background: '#FFF8F1', border: '1px solid #FFE0C2',
+            borderRadius: 4, padding: '10px 14px', display: 'flex',
+            alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          }}>
+            <div className="flex items-center gap-2 text-[12.5px]" style={{ color: '#874A20', lineHeight: 1.6 }}>
+              <AlertTriangle size={14} style={{ color: '#FF7D00', flexShrink: 0 }} />
+              <span>后端服务暂不可达，当前为前端演示数据（非真实取数结果）。</span>
+            </div>
+            {message.retryable && onRetry && (
+              <button
+                type="button"
+                onClick={() => onRetry(message.question)}
+                className="inline-flex items-center gap-1 text-[12px] font-medium"
+                style={{
+                  flexShrink: 0, padding: '4px 12px', borderRadius: 4,
+                  border: '1px solid #B758ED', background: '#fff', color: '#B758ED',
+                  cursor: 'pointer',
+                }}
+              >
+                <RefreshCw size={12} /> 重试
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* 分阶段流程 · 阶段一：需求理解 + SQL 草案（待用户确认，尚未执行） */}
+        {!isDictOnly && message.stage === 'draft' && !message.isLoading && (
+          <DraftConfirmCard message={message} onConfirm={onConfirm} />
+        )}
+
         {/* 词典卡片 */}
         {isDictOnly && message.dictResult && <DictCard metric={message.dictResult} />}
 
-        {/* 普通问答 */}
-        {!isDictOnly && (
+        {/* 普通问答（草案/执行中阶段只展示草案卡片或执行状态，不渲染结果区） */}
+        {!isDictOnly && message.stage !== 'draft' && message.stage !== 'executing' && (
           <>
-            {showBaseline && message.baselineSql && (
-              <SQLBlock sql={message.baselineSql} label="基线生成" variant="baseline" defaultOpen={false} />
-            )}
-            {message.sql && <SQLBlock sql={message.sql} label="语义优化后" variant="experiment" defaultOpen={!showBaseline} />}
+            {/* SQL 查询依据分区（可复制，草案确认后执行的 SQL 与结果工作台一一对应） */}
+            {(message.baselineSql || message.sql) && (
+              <div style={{ marginTop: 16 }}>
+                <div className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 600, color: '#252931', marginBottom: 8 }}>
+                  <Database size={13} style={{ color: '#B758ED' }} />
+                  SQL 查询依据
+                </div>
+                {showBaseline && message.baselineSql && (
+                  <SQLBlock sql={message.baselineSql} label="基线生成" variant="baseline" defaultOpen={false} />
+                )}
+                {message.sql && <SQLBlock sql={message.sql} label="语义优化后" variant="experiment" defaultOpen={!showBaseline} />}
 
-            {showBaseline && message.baselineSql && message.sql && (
-              <div style={{ marginTop: 8 }}>
-                <SQLDiff
-                  baselineSql={message.baselineSql}
-                  optimizedSql={message.sql}
-                  title="基线 vs 语义优化 SQL 差异对比"
-                  defaultOpen={forceShowBaseline}
-                />
+                {showBaseline && message.baselineSql && message.sql && (
+                  <div style={{ marginTop: 8 }}>
+                    <SQLDiff
+                      baselineSql={message.baselineSql}
+                      optimizedSql={message.sql}
+                      title="基线 vs 语义优化 SQL 差异对比"
+                      defaultOpen={forceShowBaseline}
+                    />
+                  </div>
+                )}
               </div>
             )}
 
-            {message.result && <ResultTable result={message.result} title="查询结果" />}
+            {/* 第三轮：结构化结果工作台（摘要/来源口径/发现/图表/结果表/风险/下一步） */}
+            {message.result && <ResultWorkbench message={message} onAsk={(q) => onAsk?.(q)} />}
           </>
         )}
 
@@ -256,7 +310,8 @@ export default function AIMessageCard({ message }: AIMessageCardProps) {
           </div>
         )}
 
-        {message.summary && message.summary.key_findings.length > 0 && (
+        {/* 有数据结果时，结论已在 ResultWorkbench「核心发现」分区展示；此块仅保留给无结果的兜底消息 */}
+        {!message.result && message.summary && message.summary.key_findings.length > 0 && (
           <div className="insight-note" style={{ marginTop: 16 }}>
             <div className="flex items-center gap-2 text-[14px] mb-3" style={{ color: '#252931', fontWeight: 500 }}>
               <Lightbulb size={15} style={{ color: '#B758ED' }} />
@@ -427,7 +482,158 @@ export default function AIMessageCard({ message }: AIMessageCardProps) {
             experimentPrompt={message.experimentPrompt}
           />
         )}
+
+        {/* 下一步追问建议（分阶段确认执行完成后） */}
+        {message.suggestions && message.suggestions.length > 0 && !message.isLoading && (
+          <div style={{ marginTop: 16 }}>
+            <div className="flex items-center gap-1.5 text-[12px] font-medium" style={{ color: '#565960', marginBottom: 8 }}>
+              <MessageSquare size={13} style={{ color: '#B758ED' }} /> 下一步可以追问：
+            </div>
+            <div className="flex flex-wrap" style={{ gap: 8 }}>
+              {message.suggestions.map((s, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => onAsk?.(s)}
+                  style={{
+                    fontSize: 12.5, padding: '6px 14px', borderRadius: 20, cursor: 'pointer',
+                    border: '1px solid #EDE3FB', background: '#FBFAFE', color: '#7A4DB8', textAlign: 'left',
+                  }}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+// ==================== 分阶段问数 · 需求理解 + SQL 草案确认卡片 ====================
+function DraftConfirmCard({ message, onConfirm }: {
+  message: AIMessageType;
+  onConfirm?: (planId: string) => void;
+}) {
+  const metrics = message.matchedMetrics?.map(m => m.name) ?? [];
+  const dims = message.matchedDimensions ?? [];
+
+  return (
+    <div style={{
+      border: '1px solid #E6D3FA', background: '#FBFAFE', borderRadius: 4,
+      padding: '16px 18px', marginBottom: 14,
+    }}>
+      <div className="flex items-center gap-2" style={{ marginBottom: 12, flexWrap: 'wrap' }}>
+        <CheckCircle2 size={15} style={{ color: '#B758ED' }} />
+        <span style={{ fontSize: 13.5, fontWeight: 600, color: '#252931' }}>需求理解与 SQL 草案</span>
+        {message.sqlSource && (
+          <span style={{
+            fontSize: 10.5, padding: '1px 7px', borderRadius: 3,
+            background: '#F0EBFA', color: '#7A4DB8', fontWeight: 500,
+          }}>
+            {SQL_SOURCE_LABEL[message.sqlSource] || message.sqlSource}
+          </span>
+        )}
+      </div>
+
+      {/* 澄清问题区 */}
+      {message.clarifications && message.clarifications.length > 0 && (
+        <div style={{ background: '#FFF7E6', border: '1px solid #FFE7BA', borderRadius: 4, padding: '10px 14px', marginBottom: 12 }}>
+          <div className="flex items-center gap-1.5" style={{ fontSize: 12.5, fontWeight: 600, color: '#874A20', marginBottom: 4 }}>
+            <AlertTriangle size={13} /> 需求待澄清（{message.clarifications.length}）
+          </div>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {message.clarifications.map((q, i) => (
+              <li key={i} style={{ fontSize: 12.5, color: '#874A20', lineHeight: 1.8 }}>{q}</li>
+            ))}
+          </ul>
+          <p style={{ fontSize: 11.5, color: '#B25E00', margin: '6px 0 0' }}>
+            您可补充信息后重新提问，也可按下方「系统假设」直接确认执行。
+          </p>
+        </div>
+      )}
+
+      {/* 系统假设区 */}
+      {message.assumptions && message.assumptions.length > 0 && (
+        <div style={{ background: '#F5F9FF', border: '1px solid #D6E6FF', borderRadius: 4, padding: '10px 14px', marginBottom: 12 }}>
+          <div className="flex items-center gap-1.5" style={{ fontSize: 12.5, fontWeight: 600, color: '#1E5BB8', marginBottom: 4 }}>
+            <Lightbulb size={13} /> 系统假设
+          </div>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {message.assumptions.map((a, i) => (
+              <li key={i} style={{ fontSize: 12.5, color: '#1E5BB8', lineHeight: 1.8 }}>{a}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* 需求要素标签：指标 / 时间 / 维度 / 数据集 */}
+      <div className="flex flex-wrap" style={{ gap: 8, marginBottom: 10 }}>
+        <DraftTag icon={<Target size={11} />} label="命中指标"
+          values={metrics.length > 0 ? metrics : ['未明确']} highlight={metrics.length > 0} />
+        <DraftTag icon={<Clock size={11} />} label="时间范围"
+          values={[message.timeRange || '默认上月']} highlight={!!message.timeRange} />
+        <DraftTag icon={<Tag size={11} />} label="分析维度"
+          values={dims.length > 0 ? dims : ['整体汇总']} highlight={dims.length > 0} />
+        <DraftTag icon={<Database size={11} />} label="数据集"
+          values={[message.datasetName || '零售经营数据集']} highlight />
+      </div>
+
+      {/* 固定口径过滤条件 */}
+      {message.filters && message.filters.length > 0 && (
+        <div style={{ fontSize: 11.5, color: '#898B8F', marginBottom: 10, lineHeight: 1.7 }}>
+          固定口径过滤：{message.filters.join('；')}
+        </div>
+      )}
+
+      {/* SQL 草案 */}
+      <SQLBlock sql={message.sql || ''} variant="experiment" label="SQL 草案（待您确认，尚未执行）" defaultOpen />
+
+      {/* 执行失败提示（确认后执行失败，可重试） */}
+      {message.confirmError && (
+        <div style={{
+          marginTop: 12, background: '#FFF1F0', border: '1px solid #FFCDC8',
+          borderRadius: 4, padding: '8px 12px', fontSize: 12.5, color: '#C63838',
+        }}>
+          {message.confirmError}
+        </div>
+      )}
+
+      {/* 确认操作区 */}
+      <div className="flex items-center gap-3" style={{ marginTop: 14, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          onClick={() => message.planId && onConfirm?.(message.planId)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600,
+            padding: '9px 22px', borderRadius: 4, border: 'none', cursor: 'pointer',
+            background: '#B758ED', color: '#fff', boxShadow: '0 2px 8px rgba(183,88,237,0.28)',
+          }}
+        >
+          <ShieldCheck size={14} /> 确认 SQL 并执行
+        </button>
+        <span style={{ fontSize: 11.5, color: '#898B8F', lineHeight: 1.6 }}>
+          确认前系统不会执行任何查询；点击确认后才会连接数据库取数。
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function DraftTag({ icon, label, values, highlight }: {
+  icon: React.ReactNode; label: string; values: string[]; highlight: boolean;
+}) {
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 4,
+      background: highlight ? '#FBF7FF' : '#F5F6F8', border: `1px solid ${highlight ? '#E6D3FA' : '#ECEDF1'}`,
+    }}>
+      <span style={{ color: highlight ? '#B758ED' : '#898B8F', display: 'inline-flex' }}>{icon}</span>
+      <span style={{ fontSize: 11.5, color: '#898B8F' }}>{label}：</span>
+      {values.map((v, i) => (
+        <span key={i} style={{ fontSize: 11.5, fontWeight: 600, color: highlight ? '#7A4DB8' : '#898B8F' }}>{v}</span>
+      ))}
     </div>
   );
 }

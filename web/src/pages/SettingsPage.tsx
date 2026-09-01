@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Database, CheckCircle2, AlertTriangle, Activity, Plug, Table2, Eye, ChevronDown, ChevronRight, Building2, KeyRound, Save, Loader2, Network, ShieldCheck } from 'lucide-react';
+import { Database, CheckCircle2, AlertTriangle, Activity, Plug, Table2, Eye, ChevronDown, ChevronRight, Building2, KeyRound, Save, Loader2, Network, ShieldCheck, ScrollText, RefreshCw, Clock } from 'lucide-react';
 
 interface DbHealth {
   tables: { name: string; rowCount: number }[];
@@ -419,6 +419,257 @@ function DataSourceCard() {
   );
 }
 
+// ==================== 第五轮：系统状态与审计面板 ====================
+interface SystemStatus {
+  backend: { ok: boolean; version: string; flask_env: string; run_mode: string; start_time: number; uptime_sec: number };
+  llm: { enabled: boolean; model: string; base_url_host: string };
+  datasource: {
+    current: string; ok: boolean; checked_at: number;
+    items: { source_type: string; display_name: string; is_real: boolean; is_available: boolean; connection_status: string; message?: string; ok?: boolean; is_current?: boolean }[];
+  };
+  audit: { today_total: number; today_success: number; today_failed: number; last_event_ts: number | null; log_dir: string };
+  permission: { auth_enabled: boolean; note: string };
+}
+interface AuditEvent {
+  event_id: string; time: string; kind: string; result: string;
+  question?: string; datasource?: string; staged_confirmed?: boolean;
+  mock_hit?: boolean; sql_source?: string; error_type?: string; row_count?: number; duration_ms?: number;
+}
+
+const DS_STATUS_BADGE: Record<string, { bg: string; color: string; label: string }> = {
+  unconfigured: { bg: '#F5F6F8', color: '#898B8F', label: '未配置' },
+  mock: { bg: '#FFF7E6', color: '#B25E00', label: 'Mock 演示' },
+  configured: { bg: '#E8F3FF', color: '#1E6FFF', label: '已配置 · 待联调' },
+  verified: { bg: '#EAFBF1', color: '#0F8A2F', label: '凭证已验证' },
+  real_ready: { bg: '#EAFBF1', color: '#0F8A2F', label: '真实可用' },
+};
+
+const EVENT_KIND_LABEL: Record<string, string> = {
+  'chat.plan': '问数 · SQL 草案',
+  'chat.confirm': '问数 · 确认后执行',
+  'chat.auto': '问数 · 自动取数',
+  'ent.plan': '企业 BI · 草案',
+  'ent.confirm': '企业 BI · 确认执行',
+  'ent.connect_test': '企业 BI · 连接测试',
+};
+
+function formatUptime(sec: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return `${h} 小时 ${m} 分钟`;
+  return `${m} 分钟`;
+}
+
+function SystemStatusCard() {
+  const [status, setStatus] = useState<SystemStatus | null>(null);
+  const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [offline, setOffline] = useState(false);
+
+  function load() {
+    setLoading(true);
+    Promise.allSettled([
+      fetch('/api/system/status').then(r => r.ok ? r.json() : Promise.reject()),
+      fetch('/api/audit/events?limit=8').then(r => r.ok ? r.json() : Promise.reject()),
+    ]).then(([sRes, eRes]) => {
+      if (sRes.status === 'fulfilled') {
+        setStatus(sRes.value as SystemStatus);
+        setOffline(false);
+      } else {
+        setOffline(true);
+      }
+      if (eRes.status === 'fulfilled') setEvents((eRes.value.events || []) as AuditEvent[]);
+      setLoading(false);
+    }).catch(() => { setOffline(true); setLoading(false); });
+  }
+
+  useEffect(() => { load(); }, []);
+
+  const fmtTime = (ts: number | null) => {
+    if (!ts) return '暂无';
+    const d = new Date(ts * 1000);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  };
+
+  return (
+    <div className="bg-white" style={{ border: '1px solid #ECEDF1', borderRadius: 4, padding: 28 }}>
+      <div className="flex items-center justify-between mb-5">
+        <div className="flex items-center gap-2">
+          <Activity size={16} style={{ color: '#B758ED' }} />
+          <h3 className="text-[14px] font-semibold m-0" style={{ color: '#252931' }}>系统状态与审计</h3>
+        </div>
+        <button
+          onClick={load}
+          className="flex items-center gap-1"
+          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: '#898B8F' }}
+        >
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> 刷新
+        </button>
+      </div>
+
+      {loading && <p className="text-[13px]" style={{ color: '#898B8F' }}>正在读取系统状态...</p>}
+
+      {offline && !loading && (
+        <div style={{ background: '#FFF7E6', border: '1px solid #FFE7BA', borderRadius: 4, padding: '12px 14px', fontSize: 12.5, color: '#874A20', lineHeight: 1.7, marginBottom: 16 }}>
+          ⚠️ 后端服务暂不可达，无法读取系统状态。请确认后端已启动（本地 <code style={{ fontFamily: 'var(--font-mono)' }}>python3 -m src.demo.app_backend</code>）；
+          若部署在服务器，检查 gunicorn 服务与 nginx 代理是否正常。
+        </div>
+      )}
+
+      {status && (
+        <>
+          {/* 服务与模型状态 */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+            <div style={{ background: '#FBFCFD', border: '1px solid #F1F2F3', borderRadius: 4, padding: '12px 14px' }}>
+              <div className="flex items-center gap-2 mb-2">
+                <Network size={13} style={{ color: '#898B8F' }} />
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: '#252931' }}>后端服务</span>
+                <span style={{ fontSize: 10.5, padding: '1px 6px', borderRadius: 3, background: '#EAFBF1', color: '#0F8A2F' }}>运行中</span>
+              </div>
+              <div style={{ fontSize: 11.5, color: '#565960', lineHeight: 1.9 }}>
+                <div>版本 v{status.backend.version} · {status.backend.flask_env}</div>
+                <div>运行模式：{status.backend.run_mode === 'real-llm' ? '真实 LLM' : '模板/题库模式'}</div>
+                <div className="flex items-center gap-1"><Clock size={10} /> 已运行 {formatUptime(status.backend.uptime_sec)}</div>
+              </div>
+            </div>
+            <div style={{ background: '#FBFCFD', border: '1px solid #F1F2F3', borderRadius: 4, padding: '12px 14px' }}>
+              <div className="flex items-center gap-2 mb-2">
+                <SparklesIcon />
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: '#252931' }}>智能模型</span>
+                <span style={{ fontSize: 10.5, padding: '1px 6px', borderRadius: 3, background: status.llm.enabled ? '#EAFBF1' : '#FFF7E6', color: status.llm.enabled ? '#0F8A2F' : '#B25E00' }}>
+                  {status.llm.enabled ? '真实 LLM' : '未启用'}
+                </span>
+              </div>
+              <div style={{ fontSize: 11.5, color: '#565960', lineHeight: 1.9 }}>
+                <div style={{ wordBreak: 'break-all' }}>{status.llm.model || '未配置模型'}</div>
+                <div style={{ fontFamily: 'var(--font-mono)' }}>{status.llm.base_url_host || '使用默认端点'}</div>
+                <div>{status.llm.enabled ? '限流时自动重试与题库兜底' : '在 .env 配置 LLM_API_KEY 后启用'}</div>
+              </div>
+            </div>
+            <div style={{ background: '#FBFCFD', border: '1px solid #F1F2F3', borderRadius: 4, padding: '12px 14px' }}>
+              <div className="flex items-center gap-2 mb-2">
+                <ScrollText size={13} style={{ color: '#898B8F' }} />
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: '#252931' }}>今日审计</span>
+              </div>
+              <div style={{ fontSize: 11.5, color: '#565960', lineHeight: 1.9 }}>
+                <div>事件 <b style={{ color: '#252931' }}>{status.audit.today_total}</b> 条
+                  （成功 {status.audit.today_success} · 失败 {status.audit.today_failed}）</div>
+                <div>最近事件：{fmtTime(status.audit.last_event_ts)}</div>
+                <div style={{ wordBreak: 'break-all' }}>日志：{status.audit.log_dir || '默认 logs/audit/'}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* 数据源五态 */}
+          <div className="text-[12px] font-semibold mb-2" style={{ color: '#252931' }}>
+            <Database size={12} style={{ display: 'inline', marginRight: 4, color: '#B758ED' }} />
+            数据源连接状态（最近检测：{fmtTime(status.datasource.checked_at)}）
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+            {status.datasource.items.map(ds => {
+              const badge = DS_STATUS_BADGE[ds.connection_status] || DS_STATUS_BADGE.unconfigured;
+              return (
+                <div key={ds.source_type} className="flex items-center justify-between gap-3"
+                  style={{ background: '#FBFCFD', border: ds.is_current ? '1px solid #D9BAF7' : '1px solid #F1F2F3', borderRadius: 4, padding: '10px 14px' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="flex items-center gap-2">
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#252931' }}>{ds.display_name}</span>
+                      {ds.is_current && <span style={{ fontSize: 10.5, color: '#B758ED', fontWeight: 500 }}>当前激活</span>}
+                      <span style={{ fontSize: 10, color: '#B0B5BD', fontFamily: 'var(--font-mono)' }}>{ds.source_type}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#898B8F', marginTop: 3, lineHeight: 1.6 }}>{ds.message || '—'}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span style={{ fontSize: 10.5, padding: '2px 8px', borderRadius: 3, fontWeight: 500, background: badge.bg, color: badge.color }}>{badge.label}</span>
+                    {ds.connection_status === 'mock' || ds.connection_status === 'unconfigured' ? (
+                      <span style={{ fontSize: 11, color: '#B758ED' }}>
+                        {ds.source_type === 'fengshenBi'
+                          ? '可在本页下方「风神 BI 配置」填写凭证'
+                          : '检查数据库文件与 DATASOURCE_TYPE 配置'}
+                      </span>
+                    ) : ds.connection_status === 'configured' ? (
+                      <span style={{ fontSize: 11, color: '#1E6FFF' }}>待内网联调 / 白名单开通</span>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 最近审计事件 */}
+          <div className="text-[12px] font-semibold mb-2" style={{ color: '#252931' }}>
+            <ScrollText size={12} style={{ display: 'inline', marginRight: 4, color: '#B758ED' }} />
+            最近审计事件（脱敏，不含密钥与 SQL 全文）
+          </div>
+          <div style={{ border: '1px solid #F1F2F3', borderRadius: 4, overflow: 'hidden', marginBottom: 16 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ background: '#F5F6F8' }}>
+                  <th style={{ textAlign: 'left', padding: '7px 10px', color: '#565960', fontWeight: 600 }}>时间</th>
+                  <th style={{ textAlign: 'left', padding: '7px 10px', color: '#565960', fontWeight: 600 }}>事件</th>
+                  <th style={{ textAlign: 'left', padding: '7px 10px', color: '#565960', fontWeight: 600 }}>数据源</th>
+                  <th style={{ textAlign: 'left', padding: '7px 10px', color: '#565960', fontWeight: 600 }}>确认</th>
+                  <th style={{ textAlign: 'left', padding: '7px 10px', color: '#565960', fontWeight: 600 }}>结果</th>
+                  <th style={{ textAlign: 'left', padding: '7px 10px', color: '#565960', fontWeight: 600 }}>取数</th>
+                </tr>
+              </thead>
+              <tbody>
+                {events.length === 0 && (
+                  <tr><td colSpan={6} style={{ padding: '14px 10px', color: '#B0B5BD', textAlign: 'center' }}>暂无审计事件，发起一次问数后这里会出现记录</td></tr>
+                )}
+                {events.map(ev => (
+                  <tr key={ev.event_id} style={{ borderTop: '1px solid #F5F6F8' }}>
+                    <td style={{ padding: '7px 10px', color: '#898B8F', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>{ev.time?.slice(11) || ''}</td>
+                    <td style={{ padding: '7px 10px', color: '#252931', whiteSpace: 'nowrap' }}>{EVENT_KIND_LABEL[ev.kind] || ev.kind}</td>
+                    <td style={{ padding: '7px 10px', color: '#565960', fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap' }}>{ev.datasource || '-'}</td>
+                    <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>
+                      {ev.staged_confirmed
+                        ? <span style={{ color: '#0F8A2F' }}>已确认</span>
+                        : ev.kind.includes('plan') || ev.kind.includes('connect')
+                          ? <span style={{ color: '#B25E00' }}>待确认/待联调</span>
+                          : <span style={{ color: '#898B8F' }}>自动</span>}
+                    </td>
+                    <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>
+                      <span style={{ color: ev.result === 'success' ? '#0F8A2F' : ev.result === 'failed' ? '#C63838' : '#B25E00' }}>
+                        {ev.result === 'success' ? '成功' : ev.result === 'failed' ? `失败（${ev.error_type || ''}）` : '待处理'}
+                      </span>
+                    </td>
+                    <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>
+                      {ev.mock_hit
+                        ? <span style={{ fontSize: 10.5, padding: '1px 6px', borderRadius: 3, background: '#FFF7E6', color: '#B25E00' }}>Mock/兜底</span>
+                        : <span style={{ fontSize: 10.5, padding: '1px 6px', borderRadius: 3, background: '#EAFBF1', color: '#0F8A2F' }}>真实</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 权限与安全边界 */}
+          <div className="flex items-start gap-2.5"
+            style={{ background: '#FBFAFE', border: '1px solid #EDE3FB', borderRadius: 4, padding: '12px 14px', fontSize: 12, color: '#4A3A6B', lineHeight: 1.8 }}>
+            <ShieldCheck size={14} style={{ color: '#B758ED', flexShrink: 0, marginTop: 2 }} />
+            <div>
+              <b>权限与安全边界：</b>{status.permission.note}
+              当前所有查询均以只读模式执行、SQL 需用户确认后才运行；审计事件、凭证配置、数据源管理在企业版接入登录体系（OAuth/SSO）后应限制为管理员操作——
+              本版本为这些扩展点预留了结构（<code style={{ fontFamily: 'var(--font-mono)' }}>audit.PERMISSION_POINTS</code>），但【尚未实现】登录与权限拦截。
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// 小图标（避免额外 import 名称冲突，直接内联渲染）
+function SparklesIcon() {
+  return (
+    <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#898B8F" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+      <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" />
+    </svg>
+  );
+}
+
 interface FengshenForm {
   base_url: string;
   app_id: string;
@@ -674,6 +925,8 @@ export default function SettingsPage() {
             ))}
           </dl>
         </div>
+
+        <SystemStatusCard />
 
         <DatasetHealthCard />
 

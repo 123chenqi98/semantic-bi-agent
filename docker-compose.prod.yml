@@ -11,18 +11,33 @@ services:
       - BACKEND_PORT=5001
       - FLASK_ENV=production
       - DATASOURCE_TYPE=${DATASOURCE_TYPE:-currentLocal}
+      # 审计事件落盘目录（容器内），与下方卷挂载对应
+      - AUDIT_LOG_DIR=/app/logs/audit
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_BASE_URL=${LLM_BASE_URL:-}
       - LLM_MODEL=${LLM_MODEL:-}
       - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0}
       - LLM_TIMEOUT=${LLM_TIMEOUT:-30}
+      - LLM_MAX_RETRIES=${LLM_MAX_RETRIES:-3}
+      # 风神 BI：OpenAPI / 嵌入 / 通用
       - FENGSHEN_BI_BASE_URL=${FENGSHEN_BI_BASE_URL:-}
       - FENGSHEN_BI_APP_ID=${FENGSHEN_BI_APP_ID:-}
       - FENGSHEN_BI_APP_SECRET=${FENGSHEN_BI_APP_SECRET:-}
       - FENGSHEN_BI_TOKEN=${FENGSHEN_BI_TOKEN:-}
       - FENGSHEN_BI_WORKSPACE_ID=${FENGSHEN_BI_WORKSPACE_ID:-}
+      # 风神 BI：MCP 真实取数通道（详见 .env.example 与 docs/部署与企业BI接入说明.md）
+      - FENGSHEN_BI_USER_JWT=${FENGSHEN_BI_USER_JWT:-}
+      - FENGSHEN_BI_CLIENT_ID=${FENGSHEN_BI_CLIENT_ID:-}
+      - FENGSHEN_BI_CLIENT_SECRET=${FENGSHEN_BI_CLIENT_SECRET:-}
+      - FENGSHEN_BI_PROXY_USER=${FENGSHEN_BI_PROXY_USER:-}
+      - FENGSHEN_BI_SOPHON_API_KEY=${FENGSHEN_BI_SOPHON_API_KEY:-}
+      - FENGSHEN_BI_MCP_PSM=${FENGSHEN_BI_MCP_PSM:-data.aeolus.data_set_query}
+      - FENGSHEN_BI_MCP_REGION=${FENGSHEN_BI_MCP_REGION:-cn}
+      - FENGSHEN_BI_MCP_GATEWAY_URL=${FENGSHEN_BI_MCP_GATEWAY_URL:-}
     volumes:
       - ./data:/app/data
+      # 审计 JSONL 日志持久化（第五轮）：容器重建后审计记录不丢失
+      - ./logs:/app/logs
     expose:
       - "5001"
     healthcheck:

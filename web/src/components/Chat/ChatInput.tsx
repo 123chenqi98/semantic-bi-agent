@@ -78,6 +78,24 @@ export default function ChatInput({ onSend }: ChatInputProps) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // 第三轮：结果工作台「修改口径重问」→ 把原问题回填输入框，用户改完直接重发
+  useEffect(() => {
+    const handlePrefill = (e: Event) => {
+      const text = (e as CustomEvent<string>).detail;
+      if (text) {
+        setValue(text);
+        setMenu(null);
+        requestAnimationFrame(() => {
+          textareaRef.current?.focus();
+          const len = text.length;
+          textareaRef.current?.setSelectionRange(len, len);
+        });
+      }
+    };
+    window.addEventListener('chat:prefill', handlePrefill);
+    return () => window.removeEventListener('chat:prefill', handlePrefill);
+  }, []);
+
   const detectTrigger = (text: string, caret: number): MenuState | null => {
     const before = text.slice(0, caret);
     const atMatch = before.match(/@([^\s@/]*)$/);
@@ -385,7 +403,7 @@ export default function ChatInput({ onSend }: ChatInputProps) {
             onBlur={() => {
               setTimeout(() => setIsFocused(false), 150);
             }}
-            placeholder="发消息，输入 @ 选择技能，或 / 唤起指令"
+            placeholder="输入业务问题，如：上个月各渠道的销售额是多少？（@ 选技能，/ 看指令）"
             rows={1}
             className="w-full bg-transparent border-0 outline-none resize-none text-[14px]"
             style={{

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AppProvider, useApp } from './store/ChatContext';
 import Sidebar from './components/Layout/Sidebar';
 import Header from './components/Layout/Header';
+import HomePage from './pages/HomePage';
 import ChatPage from './pages/ChatPage';
 import ChartAssistantPage from './pages/ChartAssistantPage';
 import DictionaryPage from './pages/DictionaryPage';
@@ -16,6 +17,7 @@ function AppContent() {
 
   const renderPage = () => {
     switch (state.currentPage) {
+      case 'home': return <HomePage />;
       case 'chat': return <ChatPage />;
       case 'enterpriseBi': return <EnterpriseBiPage />;
       case 'chartAssistant': return <ChartAssistantPage />;
@@ -23,7 +25,7 @@ function AppContent() {
       case 'evaluation': return <EvaluationPage />;
       case 'settings': return <SettingsPage />;
       case 'semanticEditor': return <SemanticEditorPage />;
-      default: return <ChatPage />;
+      default: return <HomePage />;
     }
   };
 

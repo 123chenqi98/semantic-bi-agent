@@ -9,10 +9,13 @@
 5. [单机部署（手动）](#5-单机部署手动)
 6. [Docker 部署（推荐）](#6-docker-部署推荐)
 7. [环境变量说明](#7-环境变量说明)
-8. [健康检查](#8-健康检查)
+8. [健康检查、系统状态与审计](#8-健康检查系统状态与审计)
 9. [企业 BI 接入架构](#9-企业-bi-接入架构)
 10. [风神 BI 真实接入指南](#10-风神-bi-真实接入指南)
 11. [API 接口清单](#11-api-接口清单)
+12. [审计与可追踪（第五轮）](#12-审计与可追踪第五轮)
+13. [能力清单与真实性边界](#13-能力清单与真实性边界)
+14. [权限与安全边界](#14-权限与安全边界)
 
 ---
 
@@ -196,24 +199,46 @@ docker build -f Dockerfile.frontend -t semantic-bi-frontend .
 
 ## 7. 环境变量说明
 
+> **变量分区（重要）**：
+> - **后端变量**写在项目根目录 `.env`（从 `.env.example` 复制），可含密钥，仅后端进程读取；
+> - **前端变量**写在 `web/.env`（从 `web/.env.example` 复制），必须以 `VITE_` 前缀开头，
+>   会被打包进浏览器 JS 包——**严禁在任何 `VITE_` 变量中放置密钥、token、JWT**；
+> - 风神 BI 凭证一律通过后端 `.env` 或设置页表单（后端内存托管）注入，前端只脱敏回显。
+
+### 7.1 后端变量（根目录 `.env`）
+
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `BACKEND_PORT` | `5001` | 后端监听端口 |
-| `FLASK_ENV` | `production` | 运行模式 |
+| `FLASK_ENV` | `production` | 运行模式（development/production，仅影响展示） |
 | `DATASOURCE_TYPE` | `currentLocal` | 数据源类型：`currentLocal` / `fengshenBi` |
 | `SQLITE_DB_PATH` | 内置路径 | SQLite 数据库文件路径 |
-| `LLM_API_KEY` | _(空)_ | LLM API Key，留空走 Mock 模式 |
+| `STATIC_DIR` | 项目根 `static/` | 生产环境前端构建产物目录（Flask 托管静态资源时使用；Docker 由 nginx 托管） |
+| `LLM_API_KEY` | _(空)_ | LLM API Key，留空走模板/题库模式（演示期简化配置：不填也能完整跑通问数链路） |
 | `LLM_BASE_URL` | _(空)_ | LLM API 地址（OpenAI 兼容） |
-| `LLM_MODEL` | _(空)_ | 模型名称 |
+| `LLM_MODEL` | _(空)_ | 模型名称/接入点 ID |
 | `LLM_TEMPERATURE` | `0` | 采样温度 |
 | `LLM_TIMEOUT` | `30` | 请求超时（秒） |
-| `LLM_MAX_RETRIES` | `2` | 最大重试次数 |
-| `FENGSHEN_BI_BASE_URL` | _(空)_ | 风神 BI OpenAPI 地址【真实接入必填】 |
-| `FENGSHEN_BI_WORKSPACE_ID` | _(空)_ | 风神 BI 工作空间 ID【真实接入必填】 |
-| `FENGSHEN_BI_APP_ID` | _(空)_ | 风神 BI 应用 ID（与 APP_SECRET 配对，用于换 token） |
-| `FENGSHEN_BI_APP_SECRET` | _(空)_ | 风神 BI 应用密钥（与 APP_ID 配对，二选一鉴权） |
-| `FENGSHEN_BI_TOKEN` | _(空)_ | 风神 BI 长期访问令牌（二选一鉴权，配置后优先使用） |
-| `WEB_PORT` | `80` | Docker 前端对外端口 |
+| `LLM_MAX_RETRIES` | `2` | 限流/失败时最大重试次数（指数退避） |
+| `AUDIT_LOG_DIR` | `<项目根>/logs/audit` | 审计 JSONL 日志目录（Docker 内为 `/app/logs/audit`，已挂卷持久化） |
+| `FENGSHEN_BI_BASE_URL` | _(空)_ | 风神 BI OpenAPI 地址（嵌入/治理用，取数非必填） |
+| `FENGSHEN_BI_WORKSPACE_ID` | _(空)_ | 风神 BI 工作空间/项目 ID（MCP `appId`，真实取数必填） |
+| `FENGSHEN_BI_APP_ID` / `APP_SECRET` / `TOKEN` | _(空)_ | OpenAPI 应用凭证 / 长期令牌（嵌入/治理用） |
+| `FENGSHEN_BI_CLIENT_ID` / `CLIENT_SECRET` | _(空)_ | 风神 MCP 开发者凭证（clientId/clientSecret，自动换取用户 JWT）【密钥】 |
+| `FENGSHEN_BI_USER_JWT` | _(空)_ | 静态用户 JWT（配置后优先于动态换取）【密钥】 |
+| `FENGSHEN_BI_PROXY_USER` | _(空)_ | 代理用户（风神账号，如 `chenqi.2005`），换取 JWT 的数据权限身份 |
+| `FENGSHEN_BI_SOPHON_API_KEY` | _(空)_ | sophon 平台 api_key（仅内网 PSM 形态）【密钥】 |
+| `FENGSHEN_BI_MCP_PSM` | `data.aeolus.data_set_query` | MCP 服务 PSM（内网 byted_mcp_client 形态） |
+| `FENGSHEN_BI_MCP_REGION` | `cn` | 区域（仅支持中国区） |
+| `FENGSHEN_BI_MCP_GATEWAY_URL` | 内置默认网关 | MCP over HTTP(S) SSE 网关地址（跨网/公网联调时覆盖） |
+| `WEB_PORT` | `80` | Docker 前端对外端口（compose 用） |
+
+### 7.2 前端变量（`web/.env`，均为非敏感配置）
+
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `VITE_BACKEND_URL` | _(空，走同源 `/api`)_ | 后端 API 地址。本地开发留空走 Vite 代理；独立部署前端时填 `http://服务器IP/api` 或域名 |
+| `VITE_DISABLE_BACKEND` | _(空)_ | 置 `true` 时强制使用前端内置演示数据（后端不可用时的离线演示，不写任何密钥） |
 
 > 风神 BI 凭证也可在前端「系统设置 → 数据源管理 → 风神 BI 授权配置」表单中填写，
 > 由后端内存托管（密钥不明文回显、不写入浏览器 localStorage）；生产环境推荐用环境变量/密钥管理服务注入。
@@ -221,9 +246,9 @@ docker build -f Dockerfile.frontend -t semantic-bi-frontend .
 
 ---
 
-## 8. 健康检查
+## 8. 健康检查、系统状态与审计
 
-### 后端健康检查
+### 8.1 后端健康检查（轻量探针）
 
 ```bash
 curl http://localhost:5001/api/health
@@ -241,20 +266,51 @@ curl http://localhost:5001/api/health
 }
 ```
 
-### 数据源健康检查
+### 8.2 统一系统状态（第五轮，首页/设置页共用）
+
+```bash
+curl http://localhost:5001/api/system/status
+```
+
+一次请求聚合五大块，供前端「系统状态与审计」面板渲染，**只回状态与脱敏信息，绝不回显密钥**：
+
+| 字段块 | 内容 |
+|--------|------|
+| `backend` | 服务状态、版本号（当前 v1.5.0）、flask_env、运行模式（real-llm / 模板题库模式）、启动时间与已运行时长 |
+| `llm` | 真实 LLM 是否启用、模型名/接入点、API host（只取域名，不含路径参数） |
+| `datasource.items[]` | 每个数据源一行：`source_type`、`connection_status`（五态）、`is_current`、`message`（含下一步修复引导） |
+| `audit` | 今日事件总数/成功/失败、最近事件时间、日志目录 |
+| `permission` | `auth_enabled`（当前 false）与安全边界说明 |
+
+前端入口：**工作台首页**数据源状态卡 + **系统设置页 →「系统状态与审计」面板**（服务/模型/审计三卡 + 数据源五态列表 + 最近审计事件表 + 权限边界说明，支持手动刷新；后端离线时显示黄色告警与启动指引）。
+
+### 8.3 审计事件查询（第五轮）
+
+```bash
+curl "http://localhost:5001/api/audit/events?limit=20"
+```
+
+返回最近审计事件（倒序）、今日汇总与权限点清单。事件字段含：事件类型、结果（success/failed/pending）、数据源、是否经 SQL 确认、是否命中 Mock/兜底、SQL 来源（llm/dimension-template/preset-bank/bank_fallback 等）、行数、耗时、错误类型。事件已脱敏（密钥黑名单递归过滤，SQL 仅记长度 + 前 200 字符预览）。
+
+> 该接口当前**未做权限拦截**（单用户演示版）；企业版接入登录后应限管理员，权限点已在 `audit.PERMISSION_POINTS` 预留（见第 14 节）。
+
+### 8.4 数据源健康检查
 
 ```bash
 curl http://localhost:5001/api/datasource/status
+curl http://localhost:5001/api/enterprise-bi/status
 ```
 
-响应包含当前数据源、所有已注册 Provider 的状态和可用性。
+响应包含当前数据源、所有已注册 Provider 的五态连接状态与可用性。
 
-### Docker 健康检查
+### 8.5 Docker 健康检查
 
 两个容器均配置了 `HEALTHCHECK`：
 
 - 后端：每 30 秒请求 `/api/health`
 - 前端：每 30 秒请求 nginx `/health`
+
+审计日志目录 `/app/logs/audit` 通过 compose 卷 `./logs:/app/logs` 持久化到宿主机。
 
 ---
 
@@ -323,10 +379,10 @@ class DataSourceProvider(ABC):
 
 ### 9.4 已注册的 Provider
 
-| source_type | 名称 | is_real | 连接状态 | 说明 |
+| source_type | 名称 | is_real（静态就绪） | 连接状态（五态） | 说明 |
 |-------------|------|---------|----------|------|
-| `currentLocal` | 本地 SQLite（零售示例库） | **True** | real_ready | 4 张表、21,064 行，完整可用 |
-| `fengshenBi` | 风神 BI（企业级接入层） | False | mock / configured | 授权、状态机、分阶段问数已就绪；MCP SSE+JWT 已打通，真实取数待邀测白名单开通（见第 10 节） |
+| `currentLocal` | 本地 SQLite（零售示例库） | **True** | real_ready | 4 张表、21,064 行，本地文件恒可达，完整可用 |
+| `fengshenBi` | 风神 BI（企业级接入层） | 凭证配齐后为 True（仅表示「会尝试真实调用」） | mock（未配凭证）/ configured（已配待联调，白名单未开通时的当前态）/ real_ready（本进程真实调用成功后） | 授权、状态机、分阶段问数、MCP SSE+JWT 传输已就绪；真实取数待邀测白名单开通（见第 10 节） |
 
 ### 9.5 文件结构
 
@@ -339,29 +395,38 @@ src/datasource/
 └── factory.py               # 工厂：按 source_type 多实例缓存 Provider
 ```
 
-风神 BI Provider 内部分层（职责清晰，便于联调）：
+风神 BI Provider 内部分五层（文件头部 docstring 有完整说明，联调时按层定位、勿跨层调用）：
 
 ```
-配置读取   → _cfg() / configure()          环境变量 + 运行时配置双通道
-凭证状态机 → connection_status() / validate_credentials()
-HTTP 客户端 → _raw_request() / _fetch_token()   标准库 urllib，鉴权头/超时/错误归一化
-响应映射   → _map_dataset() / _map_schema() / _map_query_result()
-执行标准化 → run_query() / confirm_and_run()
+1) 配置层  _cfg() / configure() / masked_config()     环境变量+运行时双通道；密钥脱敏、内存态
+2) 校验层  validate_credentials() / _mcp_ready()      必填检查 + 真实握手探测
+3) 请求层  _call_mcp_tool() / _McpSseSession / _raw_request() / _mcp_authorization()
+            SSE 传输、JWT 动态换取、超时/错误归一化；真实成败只在本层判定
+4) 映射层  _map_dataset() / _map_schema() / _map_query_result() / _to_aeolus_sql()
+            风神响应 ↔ 统一契约互转；标准 SQL ↺ [数据集ID]/[列ID] 方言转译
+5) 状态层  connection_status() / health_check() / _mcp_last_error / _mcp_real_ok
+            唯一对外状态出口（五态）；前端徽标/审计/首页设置页均只读本层
 ```
+
+OAuth/SSO 企业鉴权扩展点已预留：审计事件的 `user_id`/`tenant_id` 字段（当前固定 anonymous/null）、
+`configure()` 的凭证键集合、`PERMISSION_POINTS` 权限点；接入登录体系后按租户存凭证、
+JWT 由登录态换取、按权限点拦截即可，配置层/状态层契约不变。
 
 ### 9.6 五态连接状态机
 
-风神 BI Provider 的 `connection_status()` 返回五种标准状态，前端据此渲染徽标：
+风神 BI Provider 的 `connection_status()` 返回五种标准状态，前端（首页状态卡、设置页面板、企业 BI 页）据此渲染徽标。**第五轮起状态机严格诚实：静态配置就绪不等于真实连通。**
 
-| 状态 | 含义 | is_real | 取数行为 |
-|------|------|---------|----------|
-| `unconfigured` | 未配置任何凭证 | False | — |
-| `mock` | 未配置凭证，运行于内置 Mock 演示 | False | 返回标注 mock 的模拟结果 |
-| `configured` | 已填凭证，但真实端点未填充/未验证 | False | 返回标注「待联调」的模拟结果 |
-| `verified` | 凭证已通过真实握手（端点齐全 + 连通） | False* | 真实取数 |
-| `real_ready` | 端点齐全且验证通过，真实可用 | **True** | 真实取数 |
+| 状态 | 含义 | 判定依据 | 取数行为 |
+|------|------|----------|----------|
+| `unconfigured` | 未配置任何凭证（基类兜底态，风神 provider 不返回） | 无凭证 | — |
+| `mock` | 未配置凭证，运行于内置 Mock 演示 | 无任何凭证 | 返回明确标注 mock 的模拟结果 |
+| `configured` | **已配置 · 待联调**：凭证静态就绪但本进程尚未真实验证；或最近一次真实调用失败（白名单未开通/网络不通/无权限） | `_mcp_ready()` 静态通过但无成功记录；或 `_mcp_last_error` 非空 | 自动回退 Mock 并在结果页标注原因与申请引导 |
+| `verified` | OpenAPI 通道经「测试连接」真实握手成功 | `validate_credentials()` 握手 ok | 真实调用（OpenAPI 仅嵌入/治理，不含取数） |
+| `real_ready` | **真实可用**：本进程内 MCP 真实握手或真实取数成功过，且最近一次未失败 | `_mcp_real_ok=True` 且 `_mcp_last_error` 为空 | MCP 真实取数；后续若调用失败自动降级回 `configured` |
 
-> *`verified` 与 `real_ready` 的区别：`is_real` 仅在查询主链路所需端点（datasets / dataset_schema / query）全部填充且验证通过时才为 True，杜绝「凭证有效但取数仍 Mock」的误判。
+> 关键区分：`is_real`（属性）表示「静态配置是否就绪、值得尝试真实调用」，供路由/审计使用；
+> `connection_status()` 才是面向用户的**真实连通状态**——只有在本进程内发生过成功的真实 MCP 调用（测试连接或真实取数）后才会进入 `real_ready`，进程重启后回到 `configured`，待下次验证/取数自动升级。
+> 这样杜绝「配了环境变量但白名单没开通，界面却显示真实可用」的误报。
 
 ### 9.7 分阶段问数流程（plan → confirm）
 
@@ -586,16 +651,20 @@ curl -X POST http://localhost:5001/api/enterprise-bi/connect \
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/health` | 后端健康检查 |
+| GET | `/api/health` | 后端健康检查（轻量探针，Docker healthcheck 用） |
+| GET | `/api/system/status` | **统一系统状态**（第五轮）：服务/LLM/数据源五态/审计摘要/权限边界，首页与设置页面板共用 |
+| GET | `/api/audit/events?limit=N` | **最近审计事件**（第五轮）：倒序事件 + 今日汇总 + 权限点清单（脱敏，暂未做权限拦截） |
 | GET | `/api/help` | 技能与指令列表 |
 | GET | `/api/db-health` | 数据集健康度看板 |
 
-### 对话
+### 对话（含分阶段问数）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/chat` | 非流式问答 |
+| POST | `/api/chat` | 非流式问答（发送即取数的降级链路，仍全程审计） |
 | POST | `/api/chat/stream` | SSE 流式问答 |
+| POST | `/api/chat/plan` | **阶段一**：需求理解 + SQL 草案（只生成不执行，返回 plan_id） |
+| POST | `/api/chat/confirm` | **阶段二**：`confirmed=true` + plan_id 才执行用户确认过的 SQL |
 | GET | `/api/dict/<id>` | 指标词典查询 |
 
 ### 数据源（新增）
@@ -668,3 +737,120 @@ curl -X POST http://localhost:5001/api/datasource/query \
   -H "Content-Type: application/json" \
   -d '{"sql": "SELECT channel, COUNT(*) FROM order_item GROUP BY channel"}'
 ```
+
+---
+
+## 12. 审计与可追踪（第五轮）
+
+### 12.1 设计原则
+
+不引入重型日志平台，用「**JSONL 文件按天滚动 + 进程内环形缓冲**」双写搭好可追踪骨架，后续可平滑替换为 ELK/Loki：
+
+- **落盘**：`logs/audit/audit-YYYYMMDD.jsonl`（目录由 `AUDIT_LOG_DIR` 配置，Docker 内 `/app/logs/audit` 已挂卷），每行一个事件 JSON，追加写、按天自动切分；
+- **快查**：进程内保留最近 500 条（多 worker 部署时各 worker 独立，以 JSONL 文件为准）；
+- **安全**：密钥黑名单（api_key/token/jwt/secret/password 等）递归脱敏；SQL 不记全文，只记长度 + 前 200 字符预览；问题文本截断 200 字符；
+- **容错**：审计写入全程 try/except，任何审计故障都不阻断问数主链路。
+
+代码落点：[audit.py](file:///Users/bytedance/Desktop/graduation%20project/src/utils/audit.py)。
+
+### 12.2 事件类型
+
+| 事件 kind | 触发时机 | result 取值 |
+|-----------|----------|-------------|
+| `chat.plan` | 本地问数生成 SQL 草案（不执行） | pending / failed |
+| `chat.confirm` | 用户确认草案后执行 | success / failed |
+| `chat.auto` | 发送即取数（自动链路） | success / failed |
+| `ent.plan` | 企业 BI 草案生成 | pending / failed |
+| `ent.confirm` | 企业 BI 确认后取数 | success / failed |
+| `ent.connect_test` | 风神「测试连接」 | success / pending |
+
+每条事件记录：时间、事件类型、结果、`user_id`（当前固定 `anonymous`，登录体系预留）、`tenant_id`（预留 null）、
+问题、数据源、是否经 SQL 确认（`staged_confirmed`）、SQL 来源（`sql_source`）、是否命中 Mock/兜底（`mock_hit`）、
+连接状态、行数、耗时、错误类型与错误信息（截断）、SQL 长度/预览。
+
+### 12.3 查看方式
+
+```bash
+# 接口（设置页「系统状态与审计」面板同源）
+curl "http://localhost:5001/api/audit/events?limit=20"
+
+# 直接看落盘文件（grep/jq 均可，每行一个 JSON）
+tail -f logs/audit/audit-$(date +%Y%m%d).jsonl
+```
+
+前端：**系统设置 →「系统状态与审计」→ 最近审计事件表**（时间/事件/数据源/确认/结果/取数六列），
+取数列以绿色「真实」/ 琥珀色「Mock/兜底」徽标区分。
+
+---
+
+## 13. 能力清单与真实性边界
+
+> 原则：**不伪造企业能力**。以下三档清单明确区分「真实可用」「演示态」「接入预留」。
+
+### 13.1 ✅ 已真实可用（本地/团队部署即可依赖）
+
+| 能力 | 说明 |
+|------|------|
+| 本地问数全链路 | 语义层 Text-to-SQL（指标定义/时间语义/口径注入）、SQL 只读执行、自修复重试、题库兜底 |
+| 分阶段确认 | 需求确认 → SQL 草案 → 用户确认 → 受控执行，确认前绝不执行 SQL |
+| 分析工作台 | 执行摘要/核心发现/数据口径/SQL 依据/结果表/图表/风险提醒七分区，CSV 导出、改口径重跑、结果二次出图 |
+| 工作台首页 | 数据源状态可见、工作流入口、最近分析、示例问题 |
+| 数据源五态状态机 | 五态诚实标注，首页 + 设置页 + 企业 BI 页徽标一致；异常态给出下一步修复引导 |
+| 系统状态面板 | `/api/system/status` 统一聚合，设置页可见服务版本/运行模式/模型 host/数据源五态/审计摘要 |
+| 审计与可追踪 | 6 类事件结构化记录、JSONL 落盘、脱敏、接口查询（第 12 节） |
+| 配置规范化 | 前后端变量分区、`.env.example` 中文注释、密钥不进前端包 |
+| 部署骨架 | Dockerfile ×2、docker-compose.prod.yml、nginx（SSE 反代 + SPA）、systemd、gunicorn、健康检查 |
+
+### 13.2 🟡 演示态（链路真实、数据为模拟或本地样例）
+
+| 能力 | 边界 |
+|------|------|
+| 风神 BI 取数结果 | 需求识别与 SQL 草案为真实 LLM/语义能力；白名单未开通时最终取数**回退明确标注的 Mock 数据**（黄色横幅 + mock_note），绝不冒充真实 |
+| 未配置 LLM 时的问数 | SQL 出自内置题库/维度模板（审计 `sql_source` 如实记录），但对本地 SQLite 的查询执行是真实的 |
+| 本地零售数据集 | retail.db 21,064 行为演示数据，仅用于方法验证与口径核对，不代表真实企业经营数据 |
+| 图表生成页 | 支持真实 CSV/粘贴数据；内置示例为演示数据 |
+
+### 13.3 🔧 企业接入预留（骨架已备，待真实凭证/环境/联调）
+
+| 能力 | 现状 | 落地还需什么 |
+|------|------|--------------|
+| 风神 MCP 真实取数 | 协议/鉴权/SSE 传输/方言转译/容错已实现并在内网实测握手通过；状态机留好 real_ready 升级路径 | 账号开通 MCP 邀测白名单（每周二批量）；公网 ECS 需内网网关注点（第 10 节） |
+| 用户登录与权限 | 无登录体系；审计 `user_id/tenant_id`、`PERMISSION_POINTS`、provider OAuth 扩展点已预留 | 接入 OAuth/SSO，按租户存凭证、按权限点拦截（第 14 节） |
+| 审计日志平台 | JSONL 文件 + 接口查询 | 接 ELK/Loki 或对象存储归档 |
+| OpenAPI 嵌入/治理 | 端点与映射层占位 | 真实 base_url + token 后联调 |
+
+### 13.4 如何判断当前处于 Mock / 待联调 / 真实模式
+
+1. **看界面徽标**：首页与设置页风神卡片——「Mock 演示 · 待配置」（未配凭证）/「已配置 · 待联调」（配了未验证或白名单未通）/「MCP 已连通 · 真实可用」（本进程真实调用成功）；
+2. **查接口**：`curl /api/system/status` 看 `datasource.items[].connection_status` 与 `message`；`/api/enterprise-bi/status` 看 `details.mcp_real_ok` / `mcp_last_error`；
+3. **看结果标注**：问数结果页黄色横幅/`mock_note` 表示本次取数为回退 Mock；审计表取数列「Mock/兜底」表示非完全真实链路；
+4. **看审计字段**：`sql_source=semantic-llm/llm` 且 `mock_hit=false` 为全真实；`dimension-template/preset-bank/bank_fallback` 为兜底链路。
+
+---
+
+## 14. 权限与安全边界
+
+> **当前版本没有登录与权限体系**（单用户演示 / 团队内部部署），以下为明确的安全边界与企业版预留，不伪造「已支持权限管理」。
+
+### 14.1 已落实的安全措施
+
+- SQL 执行器**只读模式**（`mode=ro`），分阶段问数在用户确认前绝不执行 SQL；
+- 所有密钥仅后端 `.env` / 进程内存持有，前端只脱敏回显（`••••••` + 末四位），不写 localStorage、不进 VITE_ 打包变量；
+- 审计事件脱敏落盘，不含密钥与 SQL 全文；
+- 状态接口只回显模型名/API host，不回显路径参数与凭证；
+- ICP 备案通过前不在 DNS 添加解析记录；公网 ECS 不直连内网服务，失败诚实回退而非伪造。
+
+### 14.2 企业版应受权限控制的操作（预留点）
+
+权限点定义在 [audit.py](file:///Users/bytedance/Desktop/graduation%20project/src/utils/audit.py) 的 `PERMISSION_POINTS`（均标记 `implemented: False`）：
+
+| 权限点 | 操作 | 建议角色 |
+|--------|------|----------|
+| `chat.execute` | 发起问数 / 执行 SQL | 全员（只读查询） |
+| `ent.credential.write` | 保存/修改风神 BI 凭证、测试连接 | 管理员 / 数据治理 |
+| `datasource.manage` | 数据源切换与注册管理 | 管理员 |
+| `audit.read` | 查看审计事件与系统状态面板 | 管理员 / 数据治理 |
+
+落地方式：接入 OAuth/SSO 网关或 Flask 中间件后，按 `user_id`（审计字段已预留）鉴权并在对应路由前拦截；
+provider 凭证改为按 `tenant_id` 隔离存储，`_mcp_authorization()` 的用户 JWT 改由登录态令牌换取。
+前端设置页「系统状态与审计」面板底部已用紫色提示框向用户明示该边界。

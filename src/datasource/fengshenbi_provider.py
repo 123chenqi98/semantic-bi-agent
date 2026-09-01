@@ -60,6 +60,40 @@
   FENGSHEN_BI_MCP_PSM        MCP 服务 PSM，默认 data.aeolus.data_set_query
   FENGSHEN_BI_MCP_REGION     区域，默认 cn（仅支持中国区）
   FENGSHEN_BI_MCP_GATEWAY_URL  MCP over HTTP(S) 网关地址（配置后走真实 JSON-RPC，跨网/公网用）
+
+==============================================================================
+🏗️  内部分层（接入联调时按层定位，勿跨层调用）
+==============================================================================
+本 provider 虽为单文件，但按企业级适配器的五层职责组织，方法名前缀即层标识：
+
+  1) 配置层  _cfg() / configure() / masked_config() / _runtime / _SECRET_KEYS
+     —— 环境变量 + 运行时表单双通道读取；密钥只脱敏回显、内存态不落盘；
+        配置变更统一重置验证态/令牌缓存/真实连通标记。
+  2) 校验层  validate_credentials()（测试连接）/ is_available / _mcp_ready() /
+     _mcp_has_cred() / _endpoints_ready()
+     —— 必填项静态检查 + 真实握手探测；只有真实探测成功才置 real_ready。
+  3) 请求层  _call_mcp_tool() / _McpSseSession / _raw_request()（OpenAPI REST）/
+     _mcp_authorization()（clientId/secret → 用户 JWT 动态换取，内存缓存）
+     —— 传输、鉴权头、超时、SSE 会话复用、错误归一化；真实调用成败只在本层判定。
+  4) 映射层  _map_dataset() / _map_schema() / _map_query_result() / _to_aeolus_sql()
+     —— 风神响应 ↔ 系统统一契约（columns/rows/datasets）互转；标准 SQL ↺ 风神
+        `[数据集ID]`/`[列ID]` 方言转译；联调时主要对齐本层字段名。
+  5) 状态层  connection_status()（五态状态机）/ health_check() / is_real /
+     _mcp_last_error / _mcp_real_ok
+     —— 唯一对外状态出口：mock（未配置演示）/ configured（已配置待联调或最近
+        真实调用失败）/ verified（OpenAPI 握手成功）/ real_ready（本进程 MCP
+        真实调用成功且最近未失败）；前端徽标、审计、首页/设置页均只读本层，
+        禁止用「静态配置就绪」（is_real）替代真实连通状态。
+
+🔐 企业版鉴权扩展点（当前为单用户演示，以下为预留结构，尚未启用）：
+  - OAuth/SSO 登录：user_id/tenant_id 已在审计事件中预留（当前固定 anonymous）；
+    登录体系落地后，configure()/validate_credentials() 应改为按租户存储凭证，
+    _mcp_authorization() 的用户 JWT 改由登录态令牌换取，而非共用环境变量。
+  - app_id/app_secret 开放平台授权：configure() 的 allowed 键集合已包含全部
+    OpenAPI 字段，企业版接入 OAuth 端点时仅需在请求层新增 token 换取方法，
+    配置层/状态层契约不变。
+  - 权限拦截：审计查询、凭证写入、数据源管理的权限点见 src/utils/audit.py 的
+    PERMISSION_POINTS（implemented=False），接入网关/中间件后按点拦截即可。
 ==============================================================================
 """
 from __future__ import annotations
@@ -285,6 +319,10 @@ class FengshenBiProvider(DataSourceProvider):
         self._mcp_session_lock = threading.Lock()
         # 最近一次 MCP 真实调用错误（供状态/排障展示，内存态）
         self._mcp_last_error: str = ""
+        # 本进程内是否发生过「成功的真实 MCP 调用」（握手或取数）。
+        # 与 _mcp_last_error 配合区分三种情况：从未尝试 / 尝试过且成功 / 尝试过但失败，
+        # 避免仅凭静态配置就绪（_mcp_ready）就把状态误报为 real_ready。
+        self._mcp_real_ok: bool = False
 
     def _cfg(self, key: str) -> str:
         """统一配置读取：运行时配置优先，其次环境变量。"""
@@ -428,6 +466,8 @@ class FengshenBiProvider(DataSourceProvider):
             self._token_expire_at = 0.0
             self._mcp_jwt = ""
             self._mcp_jwt_expire_at = 0.0
+            self._mcp_last_error = ""
+            self._mcp_real_ok = False
         return {
             "ok": True,
             "supported": True,
@@ -470,15 +510,28 @@ class FengshenBiProvider(DataSourceProvider):
 
     # ---------------- 连接状态机 ----------------
     def connection_status(self) -> str:
-        """返回五种标准状态之一。"""
-        if self.is_real:
-            return "real_ready"
-        if self._last_verify and self._last_verify.get("ok"):
-            return "verified"
-        if self.is_available:
-            # 已填凭证但端点未就绪 / 未验证
+        """返回五种标准状态之一（诚实判定，不凭静态配置预承诺连通）。
+
+        - real_ready：本进程内已发生过成功的真实 MCP 握手/取数，且最近一次未失败；
+        - verified：OpenAPI 等通道经「测试连接」握手成功；
+        - configured：凭证已配置但尚未真实验证，或最近一次真实调用失败
+          （白名单未开通 / 网络不通 / 无权限）——即「待联调」，取数回退 Mock；
+        - mock：未配置任何凭证，纯演示模式；
+        - unconfigured：基类兜底（本 provider 不返回该态）。
+        """
+        # 1) 最近一次真实调用失败：即使曾经成功过，也降级为待联调，避免状态滞后
+        if self._mcp_last_error:
             return "configured"
-        # 未配置凭证：处于 Mock 演示模式
+        # 2)「测试连接」真实握手成功（MCP → real_ready；OpenAPI → verified）
+        if self._last_verify and self._last_verify.get("ok"):
+            return str(self._last_verify.get("status") or "verified")
+        # 3) 本进程内真实取数成功过（问数/数据集浏览命中真实 MCP）
+        if self._mcp_real_ok:
+            return "real_ready"
+        # 4) 静态配置就绪（MCP 凭证齐全）但本进程尚未做过真实验证 → 已配置·待联调
+        if self.is_real or self.is_available:
+            return "configured"
+        # 5) 未配置凭证：处于 Mock 演示模式
         return "mock"
 
     def validate_credentials(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -525,6 +578,7 @@ class FengshenBiProvider(DataSourceProvider):
                 })
                 count = len(self.list_datasets())  # 真实通道已通，重新拉取计数
                 self._mcp_last_error = ""
+                self._mcp_real_ok = True
                 result = {
                     "ok": True,
                     "status": "real_ready",
@@ -535,6 +589,7 @@ class FengshenBiProvider(DataSourceProvider):
                 }
             except Exception as e:
                 msg = f"{type(e).__name__}: {e}"
+                self._mcp_real_ok = False
                 if "WhiteList" in msg or "白名单" in msg or "whitelist" in msg.lower():
                     message = (
                         "凭证有效、内网与 SSE 网关可达，但当前账号尚未开通风神 MCP 邀测（白名单）。"
@@ -1003,11 +1058,19 @@ class FengshenBiProvider(DataSourceProvider):
         status = self.connection_status()
         status_text = {
             "mock": "未配置凭证 · Mock 演示模式（接口链路可用，数据为模拟）",
-            "configured": "凭证已配置 · 待内网联调（风神取数走 MCP，需内网网关/byted_mcp_client）",
             "verified": "凭证已验证 · 连接正常",
-            "real_ready": "真实可用（风神 MCP 取数通道已连通）",
+            "real_ready": "真实可用（风神 MCP 取数通道已连通，本进程内真实调用成功）",
             "unconfigured": "未配置",
         }.get(status, status)
+        # configured（待联调）需要区分两种子情况，给出可执行的下一步引导
+        if status == "configured":
+            if self._mcp_last_error:
+                status_text = f"凭证已配置 · 最近一次真实取数失败，暂回退 Mock 演示（原因：{self._mcp_last_error[:80]}）"
+            elif self._mcp_ready():
+                status_text = ("MCP 凭证已配置 · 待首次真实验证（点击「测试连接」或发起取数时验证；"
+                               "未开通白名单/网络不通会自动回退 Mock 并明确标注）")
+            else:
+                status_text = "凭证已配置 · 待内网联调（风神取数走 MCP，需内网网关/byted_mcp_client）"
         return {
             "ok": status in ("verified", "real_ready", "mock"),
             "source_type": self.source_type,
@@ -1021,6 +1084,8 @@ class FengshenBiProvider(DataSourceProvider):
                 "configured": self.is_available,
                 "endpoints_ready": self._endpoints_ready(),
                 "mcp_ready": self._mcp_ready(),
+                "mcp_real_ok": self._mcp_real_ok,
+                "mcp_last_error": self._mcp_last_error,
                 "mcp_psm": self._cfg("mcp_psm"),
                 "mcp_region": self._cfg("mcp_region"),
                 "mcp_gateway_configured": bool(self._mcp_gateway()),
@@ -1051,10 +1116,12 @@ class FengshenBiProvider(DataSourceProvider):
                          or (data if isinstance(data, list) else []))
                 mapped = [self._map_dataset(it) for it in items if isinstance(it, dict)]
                 self._mcp_last_error = ""
+                self._mcp_real_ok = True
                 return mapped
             except Exception as e:
                 # 未开通邀测 / 网络不通 / appId 无权限：不伪造为真实，回退 Mock 并记录原因
                 self._mcp_last_error = f"{type(e).__name__}: {e}"
+                self._mcp_real_ok = False
         # 2) OpenAPI REST（未来开放取数时）
         if self._rest_ready() and self.is_available:
             resp = self._raw_request("GET", API_ENDPOINTS["datasets"],
@@ -1077,10 +1144,12 @@ class FengshenBiProvider(DataSourceProvider):
                 schema["mock"] = False
                 schema["channel"] = "mcp"
                 self._mcp_last_error = ""
+                self._mcp_real_ok = True
                 return schema
             except Exception as e:
                 # 邀测白名单未开通 / 网络不通 / 无权限：记录原因，回退 Mock（下方统一处理）
                 self._mcp_last_error = f"{type(e).__name__}: {e}"
+                self._mcp_real_ok = False
         # 2) OpenAPI REST
         if self._rest_ready() and self.is_available:
             path = API_ENDPOINTS["dataset_schema"].replace("{id}", dataset_id)
@@ -1162,10 +1231,12 @@ class FengshenBiProvider(DataSourceProvider):
                 result["dataset_id"] = ds_id
                 result["transpiled_sql"] = aeolus_sql  # 回传转译后的风神 SQL，便于审计/展示
                 self._mcp_last_error = ""
+                self._mcp_real_ok = True
                 return result
             except Exception as e:
                 # 邀测白名单 / 网络 / 超时：不伪造真实、也不硬报错中断演示链路，
                 # 记录原因后回退 Mock（下方第 3 步统一处理）。保留 get_schema 已写入的深层原因。
+                self._mcp_real_ok = False
                 if not self._mcp_last_error:
                     self._mcp_last_error = f"{type(e).__name__}: {e}"
 

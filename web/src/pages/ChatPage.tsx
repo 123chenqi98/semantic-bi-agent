@@ -111,7 +111,7 @@ function attachSkillEnhancements(
 }
 
 export default function ChatPage() {
-  const { dispatch, currentConversation } = useApp();
+  const { state, dispatch, currentConversation } = useApp();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const disableBackend = (import.meta as any).env?.VITE_DISABLE_BACKEND === '1';
 
@@ -125,11 +125,15 @@ export default function ChatPage() {
     history?: { role: string; content: string }[],
   ): Promise<Partial<AIMessageType> | null> => {
     if (disableBackend) return null;
+    const ctrl = new AbortController();
+    // SSE 整体超时：真实 LLM 双 pipeline 可能耗时 1 分钟以上，给 120s 兜底防止永久挂起
+    const timer = setTimeout(() => ctrl.abort(), 120000);
     try {
       const resp = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question, history: history || [] }),
+        signal: ctrl.signal,
       });
       if (!resp.ok || !resp.body) return null;
 
@@ -138,6 +142,7 @@ export default function ChatPage() {
       let buffer = '';
       let streamedSql = '';
       let findings: string[] = [];
+      let sawError = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -162,15 +167,24 @@ export default function ChatPage() {
             } else if (eventName === 'finding') {
               findings = [...findings, data.text];
               onUpdate({ summary: { key_findings: findings }, streamingStatus: '生成分析结论...' });
+            } else if (eventName === 'error') {
+              // 后端流式链路显式报错：标记后让外层回退非流式接口，而非静默吞掉
+              sawError = true;
+              onUpdate({ streamingStatus: '流式通道异常，正在切换备用通道...' });
             } else if (eventName === 'done') {
+              clearTimeout(timer);
               return data as AIMessageType;
             }
           } catch { /* skip parse error */ }
         }
       }
+      // 流正常结束但未收到 done（或收到 error 事件）→ 交由外层回退非流式接口
+      void sawError;
       return null;
     } catch {
       return null;
+    } finally {
+      clearTimeout(timer);
     }
   };
 
@@ -178,7 +192,9 @@ export default function ChatPage() {
     if (disableBackend) return null;
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 20000);
+      // 真实模式后端串行跑 baseline + experiment 两次 LLM（各 30s 超时 + 重试），
+      // 20s 会把慢响应误判为失败；放宽到 90s 与后端 LLM_TIMEOUT 对齐
+      const timer = setTimeout(() => ctrl.abort(), 90000);
       const resp = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -201,8 +217,101 @@ export default function ChatPage() {
         baselineResult: j.baselineResult,
         summary: j.summary ?? { key_findings: [] },
         pipelineTrace: j.pipelineTrace,
+        // 第三轮：结果工作台结构化分区
+        conclusion: j.conclusion,
+        findings: j.findings,
+        chartSpec: j.chartSpec,
+        warnings: j.warnings,
+        provenance: j.provenance,
+        usageVerdict: j.usageVerdict,
+        suggestions: j.suggestions ?? j.suggested_questions ?? [],
       };
       return ai;
+    } catch {
+      return null;
+    }
+  };
+
+  // 分阶段问数 · 阶段一：需求理解 + SQL 草案（后端硬保证：确认前不执行任何 SQL）
+  const callChatPlan = async (
+    question: string,
+    history: { role: string; content: string }[],
+  ): Promise<Partial<AIMessageType> | null> => {
+    if (disableBackend) return null;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 60000);
+      const resp = await fetch('/api/chat/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, history }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (!resp.ok) return null;
+      const j = await resp.json();
+      if (!j.success || !j.plan_id) return null;
+      return {
+        stage: 'draft',
+        planId: j.plan_id,
+        question: j.question ?? question,
+        sql: j.sql_draft ?? '',
+        sqlSource: j.sql_source,
+        matchedMetrics: j.matched_metrics ?? [],
+        timeRange: j.time_range || undefined,
+        matchedDimensions: j.dimensions ?? [],
+        clarifications: j.clarification_questions ?? [],
+        assumptions: j.assumptions ?? [],
+        filters: j.filters ?? [],
+        datasetName: j.dataset?.name,
+      } as Partial<AIMessageType>;
+    } catch {
+      return null;
+    }
+  };
+
+  // 分阶段问数 · 阶段二：用户确认草案后才执行查询
+  const callChatConfirm = async (planId: string): Promise<Partial<AIMessageType> | null> => {
+    if (disableBackend) return null;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 90000);
+      const resp = await fetch('/api/chat/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan_id: planId, confirmed: true }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (!resp.ok) return null;
+      const j = await resp.json();
+      if (!j.result) return null;
+      return {
+        stage: 'done',
+        planId,
+        question: j.question,
+        matchedMetrics: j.matchedMetrics ?? [],
+        timeRange: j.timeRange,
+        matchedDimensions: j.matchedDimensions,
+        sql: j.sql ?? '',
+        baselineSql: j.baselineSql,
+        baselinePrompt: j.baselinePrompt,
+        experimentPrompt: j.experimentPrompt,
+        result: j.result,
+        baselineResult: j.baselineResult,
+        summary: j.summary ?? { key_findings: [] },
+        pipelineTrace: j.pipelineTrace,
+        suggestions: j.suggestions ?? j.suggested_questions ?? [],
+        datasetName: j.dataset?.name,
+        // 第三轮：结果工作台结构化分区
+        conclusion: j.conclusion,
+        findings: j.findings,
+        chartSpec: j.chartSpec,
+        warnings: j.warnings,
+        provenance: j.provenance,
+        usageVerdict: j.usageVerdict,
+        confirmError: undefined,
+      } as Partial<AIMessageType>;
     } catch {
       return null;
     }
@@ -437,29 +546,130 @@ LEFT JOIN date_dim dd ON oi.order_date=dd.date WHERE oi.pay_status='已支付' G
 
     dispatch({ type: 'ADD_MESSAGE', payload: { conversationId: convId, message: { id: aiId, type: 'ai', question: questionForAI, matchedMetrics: [], sql: '', isLoading: true, timestamp: Date.now() } as AIMessageType } });
 
-    // 先尝试后端 SSE 流式，失败回退普通 API，再失败走 Mock
-    (async () => {
-      let reply: Partial<AIMessageType> | null = null;
-      try {
-        reply = await streamBackendChat(questionForAI, (patch) => {
-          dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId, updates: patch } });
-        }, history);
-      } catch {
-        reply = null;
-      }
-      if (!reply) {
-        try { reply = await callBackendChat(questionForAI, history); } catch { reply = null; }
-      }
-      if (!reply) {
-        await new Promise(r => setTimeout(r, 400 + Math.random() * 500));
-        reply = mockAIReply(questionForAI);
-      }
-      if (tags.length > 0) {
-        reply = attachSkillEnhancements(reply, tags, questionForAI);
-      }
-      dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId, updates: { ...reply, isLoading: false, streamingStatus: undefined } as Partial<AIMessageType> } });
+    void runAIReply(questionForAI, history, convId, aiId, tags);
+  };
+
+  // 第四轮：工作台首页「立即提问/示例问题」携带问题跳转过来后，自动在新会话发起提问
+  // ref 守卫：StrictMode 开发环境 effect 双触发时保证同一问题只发送一次；清空后复位以支持再次点击
+  const consumedQuestionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!state.pendingChatQuestion) {
+      consumedQuestionRef.current = null;
+      return;
+    }
+    if (consumedQuestionRef.current === state.pendingChatQuestion) return;
+    const q = state.pendingChatQuestion;
+    consumedQuestionRef.current = q;
+    dispatch({ type: 'SET_CHAT_QUESTION', payload: null });
+    void handleSend(q);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.pendingChatQuestion]);
+
+  // 问数取数管线：分阶段 plan（默认）→ 失败降级 SSE → 非流式 API → 前端 Mock
+  const runAIReply = async (
+    question: string,
+    history: { role: string; content: string }[],
+    convId: string,
+    aiId: string,
+    tags: SkillTag[] = [],
+  ) => {
+    // 阶段一：需求理解 + SQL 草案（确认前后端不执行 SQL）
+    dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId,
+      updates: { stage: 'planning', streamingStatus: '正在理解需求、识别指标口径并生成 SQL 草案…' } } });
+    let planReply: Partial<AIMessageType> | null = null;
+    try { planReply = await callChatPlan(question, history); } catch { planReply = null; }
+    if (planReply?.planId) {
+      dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId,
+        updates: { ...planReply, isLoading: false, streamingStatus: undefined } as Partial<AIMessageType> } });
       dispatch({ type: 'SET_LOADING', payload: false });
-    })();
+      return;
+    }
+
+    // plan 不可用（旧版后端/服务异常）→ 降级第一轮的立即执行链路
+    let reply: Partial<AIMessageType> | null = null;
+    try {
+      reply = await streamBackendChat(question, (patch) => {
+        dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId, updates: patch } });
+      }, history);
+    } catch {
+      reply = null;
+    }
+    if (!reply) {
+      try { reply = await callBackendChat(question, history); } catch { reply = null; }
+    }
+    let degraded = false;
+    if (!reply) {
+      await new Promise(r => setTimeout(r, 400 + Math.random() * 500));
+      reply = mockAIReply(question);
+      degraded = true;
+    }
+    if (tags.length > 0) {
+      reply = attachSkillEnhancements(reply, tags, question);
+    }
+    if (degraded) {
+      reply.degraded = true;
+      reply.retryable = true;
+      reply.summary = {
+        key_findings: [
+          '⚠️ 后端服务暂不可达，当前为前端演示数据（非真实取数结果），可点击下方「重试」重新连接后端。',
+          ...(reply.summary?.key_findings || []),
+        ],
+      };
+    }
+    dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId, updates: { ...reply, stage: 'done', isLoading: false, streamingStatus: undefined } as Partial<AIMessageType> } });
+    dispatch({ type: 'SET_LOADING', payload: false });
+  };
+
+  // 阶段二：用户在草案卡片上点击「确认 SQL 并执行」后，才真正执行查询
+  const handleConfirmPlan = async (planId: string, aiId: string) => {
+    const convId = currentConversation.id;
+    dispatch({ type: 'SET_LOADING', payload: true });
+    dispatch({
+      type: 'UPDATE_MESSAGE',
+      payload: {
+        conversationId: convId, messageId: aiId,
+        updates: {
+          stage: 'executing', isLoading: true, confirmError: undefined,
+          streamingStatus: '正在按您确认的 SQL 执行查询…',
+        } as Partial<AIMessageType>,
+      },
+    });
+    let reply: Partial<AIMessageType> | null = null;
+    try { reply = await callChatConfirm(planId); } catch { reply = null; }
+    if (reply?.result) {
+      dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId,
+        updates: { ...reply, isLoading: false, streamingStatus: undefined } as Partial<AIMessageType> } });
+    } else {
+      // 执行失败：回到草案态，允许再次确认或重新提问（第一轮重试能力保留）
+      dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId,
+        updates: {
+          stage: 'draft', isLoading: false, streamingStatus: undefined,
+          confirmError: '执行失败或服务暂不可达，可再次点击「确认 SQL 并执行」重试。',
+          retryable: true,
+        } as Partial<AIMessageType> } });
+    }
+    dispatch({ type: 'SET_LOADING', payload: false });
+  };
+
+  // 手动重试：复用原 AI 消息卡片，重置为加载态后重跑取数管线（不新增用户消息）
+  const handleRetry = (question: string, failedAiId: string) => {
+    const convId = currentConversation.id;
+    // 历史中剔除本次失败的 AI 消息，避免把降级 Mock 内容当作上文
+    const history = buildHistory(currentConversation.messages.filter(m => m.id !== failedAiId));
+    dispatch({ type: 'SET_LOADING', payload: true });
+    dispatch({
+      type: 'UPDATE_MESSAGE',
+      payload: {
+        conversationId: convId, messageId: failedAiId,
+        updates: {
+          isLoading: true, sql: '', baselineSql: '', result: undefined, summary: undefined,
+          pipelineTrace: undefined, degraded: false, retryable: false, streamingStatus: '正在重新连接后端...',
+          stage: 'planning', planId: undefined, clarifications: [], assumptions: [],
+          suggestions: [], confirmError: undefined,
+        } as Partial<AIMessageType>,
+      },
+    });
+    void runAIReply(question, history, convId, failedAiId, []);
   };
 
   const hasMessages = currentConversation.messages.length > 0;
@@ -475,7 +685,13 @@ LEFT JOIN date_dim dd ON oi.order_date=dd.date WHERE oi.pay_status='已支付' G
               {currentConversation.messages.map(msg => (
                 msg.type === 'user'
                   ? <UserMessageCard key={msg.id} content={msg.content} />
-                  : <AIMessageCard key={msg.id} message={msg} />
+                  : <AIMessageCard
+                      key={msg.id}
+                      message={msg}
+                      onRetry={(q) => handleRetry(q, msg.id)}
+                      onConfirm={(pid) => void handleConfirmPlan(pid, msg.id)}
+                      onAsk={(q) => handleSend(q)}
+                    />
               ))}
               <div ref={messagesEndRef} />
             </div>

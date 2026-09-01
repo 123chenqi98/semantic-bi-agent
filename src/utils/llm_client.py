@@ -10,6 +10,7 @@ import os
 import json
 import ssl
 import time
+import random
 import urllib.request
 import urllib.error
 
@@ -53,6 +54,7 @@ class LLMClient:
         self.model = os.environ.get("LLM_MODEL", "gpt-4o-mini")
         self.temperature = float(os.environ.get("LLM_TEMPERATURE", "0"))
         self.timeout = int(os.environ.get("LLM_TIMEOUT", "30"))
+        self.max_retries = max(1, int(os.environ.get("LLM_MAX_RETRIES", "3")))
 
         if not self.api_key:
             raise ValueError(
@@ -60,10 +62,16 @@ class LLMClient:
                 "示例：export LLM_API_KEY=sk-xxx && export LLM_BASE_URL=https://ark.cn-beijing.volces.com/api/v3 && export LLM_MODEL=ep-xxx"
             )
 
-    def chat(self, messages, max_retries=2, **kwargs):
+    def chat(self, messages, max_retries=None, **kwargs):
         """发送 Chat Completion 请求，返回助手回复文本。
-        遇到 429 限流自动指数退避重试。
+
+        可重试错误（指数退避 + 随机抖动）：
+          - HTTP 429 限流 / 5xx 网关错误
+          - 网络错误 / 超时（URLError）
+          - 响应体非法 JSON / choices 为空（内容审核拦截等瞬时空响应）
+        不可重试错误：4xx（除 429，如 401 鉴权失败、400 参数错误）直接抛出。
         """
+        total_attempts = max_retries or self.max_retries
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         payload = {
             "model": kwargs.get("model", self.model),
@@ -85,31 +93,59 @@ class LLMClient:
         ctx.verify_mode = ssl.CERT_NONE
 
         last_error = None
-        for attempt in range(max_retries):
+        for attempt in range(total_attempts):
+            can_retry = attempt < total_attempts - 1
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout, context=ctx) as resp:
                     body = json.loads(resp.read().decode("utf-8"))
-                    return body["choices"][0]["message"]["content"]
+                content = ((body.get("choices") or [{}])[0].get("message") or {}).get("content")
+                if not content or not str(content).strip():
+                    raise RuntimeError(f"LLM 返回空内容（可能被内容审核拦截）：{str(body)[:200]}")
+                return content
             except urllib.error.HTTPError as e:
-                err_body = e.read().decode("utf-8", errors="ignore")
-                if e.code == 429 and attempt < max_retries - 1:
-                    wait = 2 ** attempt * 1 + 1
-                    print(f"   ⏳ 遇到限流(429)，等待 {wait}s 后重试 ({attempt+1}/{max_retries})...")
+                err_body = e.read().decode("utf-8", errors="ignore")[:300]
+                last_error = RuntimeError(f"LLM HTTP {e.code} 错误: {err_body}")
+                # 429 限流与 5xx 网关错误可重试；其余 4xx（401/403/400）为确定性错误，直接抛出
+                retryable = e.code == 429 or 500 <= e.code < 600
+                if retryable and can_retry:
+                    wait = self._backoff_seconds(attempt)
+                    print(f"   ⏳ LLM HTTP {e.code}，等待 {wait:.1f}s 后重试 ({attempt+1}/{total_attempts})...")
                     time.sleep(wait)
                     continue
-                raise RuntimeError(f"LLM HTTP {e.code} 错误: {err_body}")
+                raise last_error
             except urllib.error.URLError as e:
-                if attempt < max_retries - 1:
-                    wait = 2 ** attempt * 2
-                    print(f"   ⏳ 网络错误，等待 {wait}s 后重试 ({attempt+1}/{max_retries})...")
+                last_error = RuntimeError(f"LLM 网络错误: {e.reason}")
+                if can_retry:
+                    wait = self._backoff_seconds(attempt)
+                    print(f"   ⏳ 网络错误/超时，等待 {wait:.1f}s 后重试 ({attempt+1}/{total_attempts})...")
                     time.sleep(wait)
                     continue
-                raise RuntimeError(f"LLM 网络错误: {e.reason}")
-            except Exception as e:
-                raise RuntimeError(f"LLM 调用异常: {type(e).__name__}: {e}")
+                raise last_error
+            except (json.JSONDecodeError, KeyError, IndexError) as e:
+                last_error = RuntimeError(f"LLM 响应解析失败: {type(e).__name__}: {e}")
+                if can_retry:
+                    wait = self._backoff_seconds(attempt)
+                    print(f"   ⏳ 响应解析失败，等待 {wait:.1f}s 后重试 ({attempt+1}/{total_attempts})...")
+                    time.sleep(wait)
+                    continue
+                raise last_error
+            except RuntimeError as e:
+                # 空内容等可重试瞬时错误
+                last_error = e
+                if can_retry:
+                    wait = self._backoff_seconds(attempt)
+                    print(f"   ⏳ {e}，等待 {wait:.1f}s 后重试 ({attempt+1}/{total_attempts})...")
+                    time.sleep(wait)
+                    continue
+                raise
 
-        raise RuntimeError(f"LLM 调用失败，已重试 {max_retries} 次: {last_error}")
+        raise RuntimeError(f"LLM 调用失败，已重试 {total_attempts} 次: {last_error}")
+
+    @staticmethod
+    def _backoff_seconds(attempt: int) -> float:
+        """指数退避 + 随机抖动：2^attempt 秒基准，叠加 0~1 秒抖动，避免重试风暴。"""
+        return min(2.0 ** attempt, 20.0) + random.uniform(0, 1.0)
 
 
 def extract_sql_from_response(text):

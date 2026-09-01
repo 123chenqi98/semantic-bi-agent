@@ -2,6 +2,7 @@
 SQL 执行器：连接 SQLite 数据库，执行 SQL 并返回结构化结果。
 """
 import os
+import pathlib
 import sqlite3
 
 
@@ -27,7 +28,21 @@ class SQLExecutor:
         start = time.time()
         conn = None
         try:
-            conn = sqlite3.connect(self.db_path, timeout=timeout)
+            if not os.path.exists(self.db_path):
+                # 显式结构化报错：避免 sqlite3 隐式创建空库后再报「no such table」这种迷惑性错误
+                return {
+                    "success": False,
+                    "columns": [],
+                    "rows": [],
+                    "row_count": 0,
+                    "truncated": False,
+                    "error": f"数据库文件不存在：{self.db_path}（请先运行 src/data_processing/init_db.py 初始化数据集）",
+                    "elapsed_ms": round((time.time() - start) * 1000, 1),
+                }
+            # 只读模式打开：Text-to-SQL 生成的语句永远不应写库，
+            # 同时避免 Gunicorn 多 worker 并发读时的锁竞争与误写风险
+            ro_uri = pathlib.Path(os.path.abspath(self.db_path)).as_uri() + "?mode=ro"
+            conn = sqlite3.connect(ro_uri, uri=True, timeout=timeout)
             conn.row_factory = None
             cur = conn.cursor()
             cur.execute(sql)

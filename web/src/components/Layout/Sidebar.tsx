@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { MessageSquare, BookOpen, FlaskConical, Settings, Plus, Trash2, ChevronDown, ExternalLink, BarChart3, SlidersHorizontal, Building2 } from 'lucide-react';
+import { MessageSquare, BookOpen, FlaskConical, Settings, Plus, Trash2, ChevronDown, ExternalLink, BarChart3, SlidersHorizontal, Building2, LayoutGrid } from 'lucide-react';
 import { useApp } from '../../store/ChatContext';
 import type { PageType } from '../../types';
 
 const navItems: { id: PageType; label: string; icon: React.ReactNode }[] = [
+  { id: 'home', label: '工作台首页', icon: <LayoutGrid size={16} /> },
   { id: 'chat', label: 'AI 对话', icon: <MessageSquare size={16} /> },
   { id: 'enterpriseBi', label: '企业 BI 问数', icon: <Building2 size={16} /> },
   { id: 'chartAssistant', label: '图表生成', icon: <BarChart3 size={16} /> },
@@ -56,7 +57,7 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
       {/* 新建对话 */}
       <div style={{ padding: '0 16px 12px 16px' }}>
         <button
-          onClick={() => dispatch({ type: 'NEW_CONVERSATION' })}
+          onClick={() => { dispatch({ type: 'NEW_CONVERSATION' }); dispatch({ type: 'SET_PAGE', payload: 'chat' }); }}
           className="w-full flex items-center justify-center gap-2 text-[14px]"
           style={{
             height: 36,

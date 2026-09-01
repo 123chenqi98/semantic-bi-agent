@@ -16,6 +16,9 @@ COPY src/ ./src/
 COPY wsgi.py .
 COPY data/ ./data/
 
+# 审计日志目录（第五轮：JSONL 事件落盘；compose 中挂载为持久卷）
+RUN mkdir -p /app/logs/audit
+
 # 环境变量默认值
 ENV BACKEND_PORT=5001 \
     FLASK_ENV=production \

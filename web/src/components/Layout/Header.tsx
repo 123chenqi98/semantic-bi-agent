@@ -9,6 +9,7 @@ export default function Header({ onToggleSidebar }: HeaderProps) {
   const { state } = useApp();
 
   const pageMeta: Record<string, { title: string; desc?: string }> = {
+    home: { title: '工作台首页', desc: '数据源连接状态、常用功能入口与最近分析记录' },
     chat: { title: 'NoSQL 经营分析助手' },
     chartAssistant: { title: '图表生成助手', desc: '上传 CSV / 粘贴数据，AI 智能推荐图表类型并生成可视化' },
     dictionary: { title: '指标语义词典', desc: '维护指标定义、口径规则与时间语义映射' },
