@@ -202,11 +202,11 @@ export default function HomePage() {
   ];
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div style={{ maxWidth: 1080, margin: '0 auto', padding: '28px 32px 56px 32px' }}>
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      <div style={{ maxWidth: 1080, margin: '0 auto', padding: '20px 32px 36px 32px' }}>
 
         {/* ① 顶部定位区：一句话说明这是什么、能做什么 */}
-        <div className="flex items-start justify-between gap-6" style={{ marginBottom: 24 }}>
+        <div className="flex items-start justify-between gap-6" style={{ marginBottom: 16 }}>
           <div style={{ minWidth: 0 }}>
             <div
               className="inline-flex items-center mb-3"
@@ -244,7 +244,7 @@ export default function HomePage() {
         </div>
 
         {/* ② 数据源与连接状态：当前数据源 / 风神 BI / 模型服务，一眼可见 */}
-        <div style={{ background: '#fff', border: '1px solid #ECEDF1', borderRadius: 4, padding: '20px 22px', marginBottom: 28 }}>
+        <div style={{ background: '#fff', border: '1px solid #ECEDF1', borderRadius: 4, padding: '16px 18px', marginBottom: 18 }}>
           <SectionTitle
             icon={<Plug size={15} />}
             title="数据源与连接状态"
@@ -281,7 +281,7 @@ export default function HomePage() {
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
             {/* 当前数据源 */}
-            <div style={{ background: '#FBFCFD', border: '1px solid #F1F2F3', borderRadius: 4, padding: '14px 16px' }}>
+            <div style={{ background: '#FBFCFD', border: '1px solid #F1F2F3', borderRadius: 4, padding: '12px 14px' }}>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <Database size={14} style={{ color: '#898B8F' }} />
@@ -307,7 +307,7 @@ export default function HomePage() {
             </div>
 
             {/* 风神 BI 企业数据源（五态状态机：mock / configured / verified / real_ready） */}
-            <div style={{ background: '#FBFCFD', border: '1px solid #F1F2F3', borderRadius: 4, padding: '14px 16px' }}>
+            <div style={{ background: '#FBFCFD', border: '1px solid #F1F2F3', borderRadius: 4, padding: '12px 14px' }}>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <Building2 size={14} style={{ color: '#898B8F' }} />
@@ -345,7 +345,7 @@ export default function HomePage() {
             </div>
 
             {/* 智能模型服务 */}
-            <div style={{ background: '#FBFCFD', border: '1px solid #F1F2F3', borderRadius: 4, padding: '14px 16px' }}>
+            <div style={{ background: '#FBFCFD', border: '1px solid #F1F2F3', borderRadius: 4, padding: '12px 14px' }}>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <Sparkles size={14} style={{ color: '#898B8F' }} />
@@ -382,7 +382,7 @@ export default function HomePage() {
         </div>
 
         {/* ③ 常用入口区：主要任务一卡直达 */}
-        <div style={{ marginBottom: 28 }}>
+        <div style={{ marginBottom: 18 }}>
           <SectionTitle icon={<BarChart3 size={15} />} title="常用功能" />
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
             {entries.map(entry => (
@@ -392,7 +392,7 @@ export default function HomePage() {
                 className="text-left"
                 style={{
                   background: '#fff', border: entry.primary ? '1px solid #D9BAF7' : '1px solid #ECEDF1',
-                  borderRadius: 4, padding: '16px 18px', cursor: 'pointer', outline: 'none',
+                  borderRadius: 4, padding: '14px 16px', cursor: 'pointer', outline: 'none',
                   transition: 'border-color .15s, background .15s',
                 }}
                 onMouseEnter={e => {
@@ -428,9 +428,9 @@ export default function HomePage() {
         </div>
 
         {/* ④ 最近分析 + 推荐起步动作 */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1.8fr 1fr', gap: 16, marginBottom: 28 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1.8fr 1fr', gap: 16, marginBottom: 18 }}>
           {/* 最近分析：基于本地会话历史，不伪造任何后端数据 */}
-          <div style={{ background: '#fff', border: '1px solid #ECEDF1', borderRadius: 4, padding: '20px 22px' }}>
+          <div style={{ background: '#fff', border: '1px solid #ECEDF1', borderRadius: 4, padding: '16px 18px' }}>
             <SectionTitle
               icon={<History size={15} />}
               title="最近分析"
@@ -519,7 +519,7 @@ export default function HomePage() {
           </div>
 
           {/* 推荐起步动作：承接第二、三轮的分阶段确认与分析工作台 */}
-          <div style={{ background: '#fff', border: '1px solid #ECEDF1', borderRadius: 4, padding: '20px 22px' }}>
+          <div style={{ background: '#fff', border: '1px solid #ECEDF1', borderRadius: 4, padding: '16px 18px' }}>
             <SectionTitle icon={<Sparkles size={15} />} title="三步完成一次分析" />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 18 }}>
               {[
@@ -597,7 +597,7 @@ export default function HomePage() {
         </div>
 
         {/* ⑥ 精选示例：3 类典型任务，点击直接发起一次真实问数流程 */}
-        <div style={{ background: '#fff', border: '1px solid #ECEDF1', borderRadius: 4, padding: '20px 22px' }}>
+        <div style={{ background: '#fff', border: '1px solid #ECEDF1', borderRadius: 4, padding: '16px 18px' }}>
           <SectionTitle
             icon={<MessageSquare size={15} />}
             title="精选示例 · 三类典型分析任务"

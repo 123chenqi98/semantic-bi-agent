@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AppProvider, useApp } from './store/ChatContext';
 import Sidebar from './components/Layout/Sidebar';
 import Header from './components/Layout/Header';
+import Footer from './components/Layout/Footer';
 import HomePage from './pages/HomePage';
 import ChatPage from './pages/ChatPage';
 import ChartAssistantPage from './pages/ChartAssistantPage';
@@ -43,6 +44,7 @@ function AppContent() {
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         <Header onToggleSidebar={() => setSidebarOpen(v => !v)} />
         {renderPage()}
+        <Footer />
       </div>
     </div>
   );

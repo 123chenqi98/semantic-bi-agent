@@ -226,7 +226,7 @@ export default function EnterpriseBiPage() {
   const chipDatasets = showAllDatasets ? datasets : datasets.slice(0, 3);
 
   return (
-    <div className="flex-1 h-[calc(100vh-64px)] overflow-y-auto">
+    <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="page-padding-responsive" style={{ maxWidth: 960, margin: '0 auto', padding: '30px 48px 64px 48px', display: 'flex', flexDirection: 'column', rowGap: 18 }}>
 
         {/* 顶部：数据源身份 + 状态 + 快捷入口 */}

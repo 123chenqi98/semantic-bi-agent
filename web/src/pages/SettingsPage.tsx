@@ -903,7 +903,7 @@ export default function SettingsPage() {
   const techStack = ['React 19', 'TypeScript', 'Tailwind CSS v4', 'Python Flask', 'SQLite', 'LLM (Doubao)'];
 
   return (
-    <div className="flex-1 h-[calc(100vh-64px)] overflow-y-auto">
+    <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="page-padding-responsive" style={{ maxWidth: 880, margin: '0 auto', padding: '40px 48px 64px 48px', display: 'flex', flexDirection: 'column', rowGap: 28 }}>
         <div className="bg-white" style={{ border: '1px solid #ECEDF1', borderRadius: 4, padding: 32 }}>
           <h3 className="text-[14px] font-semibold mb-6" style={{ color: '#252931' }}>项目信息</h3>

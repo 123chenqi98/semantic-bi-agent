@@ -118,7 +118,7 @@ export default function EvaluationPage() {
   ];
 
   return (
-    <div className="flex-1 h-[calc(100vh-64px)] overflow-y-auto">
+    <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="page-padding-responsive" style={{ maxWidth: 1400, margin: '0 auto', padding: '40px 48px 64px 48px', display: 'flex', flexDirection: 'column', rowGap: 32 }}>
         {/* 统计卡片 */}
         <div className="grid grid-cols-4" style={{ columnGap: 20 }}>

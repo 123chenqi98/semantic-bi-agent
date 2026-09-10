@@ -3,8 +3,8 @@
 # 一键部署到阿里云 ECS（语义层 BI Agent）
 #
 # 用法：
-#   ./deploy.sh                  # 运行后按提示输入服务器 root 密码
-#   ECS_PASSWORD='你的密码' ./deploy.sh   # 或通过环境变量传入（免交互）
+#   ./deploy.sh                  # 优先使用 SSH 密钥免密登录，无密钥时提示输入 root 密码
+#   ECS_PASSWORD='你的密码' ./deploy.sh   # 或通过环境变量传入密码（免交互）
 #
 # 自动完成：构建前端 → 打包 → 上传 → 服务器解压重启 → 公网验证
 # 依赖：macOS 自带 bash/expect/tar，项目 web/ 目录需已 npm install
@@ -14,7 +14,7 @@ set -euo pipefail
 SERVER="root@8.133.193.224"
 REMOTE_DIR="/opt/semantic-bi-agent"
 SERVICE="semantic-bi-agent"
-HEALTH_URL="http://8.133.193.224/api/health"
+HEALTH_URL="https://bi-agent.chenqi2005.xin/api/health"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
@@ -24,12 +24,17 @@ fail() { echo -e "${RED}✗ $*${NC}" >&2; exit 1; }
 
 command -v expect >/dev/null || fail "未找到 expect（macOS 自带，请检查环境）"
 
-if [ -z "${ECS_PASSWORD:-}" ]; then
+if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$SERVER" true 2>/dev/null; then
+  info "检测到 SSH 密钥免密登录，无需输入密码"
+  export ECS_PASSWORD="${ECS_PASSWORD:-}"
+elif [ -z "${ECS_PASSWORD:-}" ]; then
   read -s -p "请输入服务器 root 密码: " ECS_PASSWORD
   echo
   [ -n "$ECS_PASSWORD" ] || fail "密码不能为空"
+  export ECS_PASSWORD
+else
+  export ECS_PASSWORD
 fi
-export ECS_PASSWORD
 
 # ---------- [1/5] 构建前端 ----------
 info "[1/5] 构建前端生产包..."
@@ -83,10 +88,10 @@ EXPECT_EOF
 # ---------- [5/5] 公网验证 ----------
 info "[5/5] 验证公网访问..."
 sleep 2
-resp="$(curl -s --max-time 15 "$HEALTH_URL" || true)"
+resp="$(curl -sL --max-time 15 "$HEALTH_URL" || true)"
 echo "   $resp"
 if echo "$resp" | grep -q '"ok":true'; then
-  echo -e "${GREEN}✅ 部署成功！访问地址：http://8.133.193.224${NC}"
+  echo -e "${GREEN}✅ 部署成功！访问地址：https://bi-agent.chenqi2005.xin${NC}"
 else
   fail "公网健康检查未通过，可登录服务器查看日志：journalctl -u $SERVICE -f"
 fi

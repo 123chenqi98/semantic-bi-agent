@@ -675,7 +675,7 @@ LEFT JOIN date_dim dd ON oi.order_date=dd.date WHERE oi.pay_status='已支付' G
   const hasMessages = currentConversation.messages.length > 0;
 
   return (
-    <div className="flex-1 flex flex-col h-[calc(100vh-64px)] overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {!hasMessages ? (
         <WelcomePage onSelectQuestion={handleSend} />
       ) : (

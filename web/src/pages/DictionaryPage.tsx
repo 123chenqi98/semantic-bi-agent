@@ -6,7 +6,7 @@ export default function DictionaryPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   return (
-    <div className="flex-1 h-[calc(100vh-64px)] overflow-y-auto">
+    <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="page-padding-responsive" style={{ maxWidth: 1200, margin: '0 auto', padding: '40px 48px 64px 48px', display: 'flex', flexDirection: 'column', rowGap: 32 }}>
         {/* 全局口径规则 */}
         <div className="bg-white" style={{ border: '1px solid #ECEDF1', borderRadius: 4, padding: 32 }}>

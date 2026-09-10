@@ -89,7 +89,7 @@ export default function SemanticEditorPage() {
   };
 
   return (
-    <div className="flex-1 h-[calc(100vh-64px)] overflow-hidden flex relative">
+    <div className="flex-1 min-h-0 overflow-hidden flex relative">
       {mobileListOpen && (
         <div className="semantic-backdrop" onClick={() => setMobileListOpen(false)} />
       )}
