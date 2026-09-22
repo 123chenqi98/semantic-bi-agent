@@ -976,9 +976,12 @@ class FengshenBiProvider(DataSourceProvider):
         isPartitionField(是否分区字段) 以及字段 ID（用于 `[列ID]` SQL 转译）。
         TODO(内网联调): 字段 ID / 分区标记的确切键名以真实响应为准，此处做多命名兼容。
         """
-        data = resp.get("data", resp) if isinstance(resp, dict) else {}
-        raw_cols = (data.get("columns") or data.get("fields") or data.get("schema")
-                    or data.get("list") or (data if isinstance(data, list) else []))
+        data = resp.get("data", resp) if isinstance(resp, dict) else resp
+        if isinstance(data, dict):
+            raw_cols = (data.get("columns") or data.get("fields") or data.get("schema")
+                        or data.get("list") or [])
+        else:
+            raw_cols = data if isinstance(data, list) else []
         columns = []
         for c in raw_cols:
             c = c.get("field", c) if isinstance(c, dict) else {}
@@ -1012,16 +1015,30 @@ class FengshenBiProvider(DataSourceProvider):
         TODO(风神BI文档): 结果集可能是 columns+rows，也可能是 list[dict]，此处兼容。
         """
         data = resp.get("data", resp)
+        # 形态 0：风神 MCP 实测结构 {header: ["列名",...], rows: [[...],...]}
+        if (isinstance(data, dict) and isinstance(data.get("header"), list)
+                and isinstance(data.get("rows"), list)):
+            columns = [str(c) for c in data["header"]]
+            rows = [list(r) for r in data["rows"]]
         # 形态 1：{columns: [...], rows: [[...], ...]}
-        if isinstance(data.get("columns"), list) and isinstance(data.get("rows"), list):
+        elif (isinstance(data, dict) and isinstance(data.get("columns"), list)
+                and isinstance(data.get("rows"), list)):
             cols = data["columns"]
             columns = [c.get("name", c) if isinstance(c, dict) else str(c) for c in cols]
             rows = [list(r) for r in data["rows"]]
         # 形态 2：{records: [{col: val}, ...]}
-        elif isinstance(data.get("records") or data.get("list"), list):
+        elif isinstance(data, dict) and isinstance(
+                data.get("records") or data.get("list"), list):
             records = data.get("records") or data.get("list")
             columns = list(records[0].keys()) if records else []
             rows = [[r.get(c) for c in columns] for r in records]
+        # 形态 3：data 直接是行记录列表 [{col: val}, ...]
+        elif isinstance(data, list):
+            records = data
+            columns = (list(records[0].keys())
+                       if records and isinstance(records[0], dict) else [])
+            rows = [[r.get(c) for c in columns] if isinstance(r, dict) else list(r)
+                    for r in records]
         else:
             columns, rows = [], []
         return {
@@ -1113,6 +1130,7 @@ class FengshenBiProvider(DataSourceProvider):
                 data = resp.get("data", resp) if isinstance(resp, dict) else resp
                 items = (data.get("datasets") or data.get("list") or data.get("dataSets")
                          or data.get("data_set_list") or data.get("dataSetList")
+                         or data.get("entityList")
                          or (data if isinstance(data, list) else []))
                 mapped = [self._map_dataset(it) for it in items if isinstance(it, dict)]
                 self._mcp_last_error = ""
