@@ -181,6 +181,15 @@ _SECRET_KEYS = {"app_secret", "token", "access_token",
                 "client_secret", "user_jwt", "sophon_api_key"}
 
 
+class McpSessionError(RuntimeError):
+    """MCP SSE 会话级传输错误（HTTP 4xx/5xx、连接断开、响应超时）。
+
+    这类错误通常由服务端会话过期 / SSE 流被关闭导致，重建会话后可恢复，
+    调用方应捕获并在重置会话后重试一次。业务参数错误（未知工具、权限不足、
+    SQL 语法错误等）以普通 RuntimeError 抛出，不触发重试。
+    """
+
+
 class _McpSseSession:
     """风神 MCP 的 SSE transport 长连接会话（标准库实现，零第三方依赖）。
 
@@ -204,6 +213,20 @@ class _McpSseSession:
         self._start_lock = threading.Lock()
         self._call_lock = threading.Lock()
         self._handshaked = False
+        self._reader_thread: threading.Thread | None = None
+        self._stale = False  # 会话已失效（HTTP 错误 / 连接断开 / 超时），需重建
+
+    def is_stale(self) -> bool:
+        """会话是否已失效：显式标记 stale，或 reader 线程已退出（SSE 流被服务端关闭）。"""
+        if self._stale:
+            return True
+        if self._reader_thread is not None and not self._reader_thread.is_alive():
+            return True
+        return False
+
+    def close(self) -> None:
+        """标记会话失效（reader 为 daemon 线程，连接断开后自行退出）。"""
+        self._stale = True
 
     def _reader_loop(self) -> None:
         req = urllib.request.Request(self._sse_url, headers={"Accept": "text/event-stream"})
@@ -233,7 +256,9 @@ class _McpSseSession:
         with self._start_lock:
             if self._started:
                 return
-            threading.Thread(target=self._reader_loop, daemon=True).start()
+            t = threading.Thread(target=self._reader_loop, daemon=True)
+            self._reader_thread = t
+            t.start()
             if not self._endpoint_ready.wait(self._connect_timeout):
                 raise RuntimeError(
                     f"风神 MCP SSE 连接超时：{self._connect_timeout}s 内未收到 endpoint 事件"
@@ -241,11 +266,21 @@ class _McpSseSession:
             self._started = True
 
     def _post(self, message: dict) -> int:
-        req = urllib.request.Request(
-            self._endpoint, data=json.dumps(message).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=self._io_timeout) as r:
-            return r.status
+        try:
+            req = urllib.request.Request(
+                self._endpoint, data=json.dumps(message).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=self._io_timeout) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            # HTTP 4xx/5xx：会话过期（如 400 Bad Request / 410 Gone）或服务端异常
+            self._stale = True
+            raise McpSessionError(
+                f"风神 MCP POST 返回 HTTP {e.code}（会话可能已过期）: {e.reason}") from e
+        except (urllib.error.URLError, ConnectionError, OSError, TimeoutError) as e:
+            # 连接断开 / 网络不可达 / 超时：SSE 流对应的 endpoint 已失效
+            self._stale = True
+            raise McpSessionError(f"风神 MCP POST 网络错误（会话可能已断开）: {e}") from e
 
     def _wait_response(self, rid: int, timeout: float) -> dict | None:
         deadline = time.time() + timeout
@@ -273,6 +308,8 @@ class _McpSseSession:
         """调用一个 MCP 工具，返回其 result（dict）。串行、阻塞至 SSE 回推或超时。"""
         self._ensure_started()
         with self._call_lock:
+            if self.is_stale():
+                raise McpSessionError("风神 MCP 会话已失效（reader 线程已退出），需重建")
             self._handshake()
             self._rpc_id += 1
             rid = self._rpc_id
@@ -280,7 +317,10 @@ class _McpSseSession:
                         "params": {"name": name, "arguments": arguments}})
             resp = self._wait_response(rid, timeout)
         if not resp:
-            raise RuntimeError(f"风神 MCP 工具 {name} 响应超时（{timeout:.0f}s）")
+            # 超时：大概率 SSE 流已断开（reader 退出 / 服务端不再回推）
+            self._stale = True
+            raise McpSessionError(
+                f"风神 MCP 工具 {name} 响应超时（{timeout:.0f}s，会话可能已断开），需重建")
         if resp.get("error"):
             err = resp["error"]
             msg = err.get("message") if isinstance(err, dict) else str(err)
@@ -835,17 +875,47 @@ class FengshenBiProvider(DataSourceProvider):
         tool = str(spec["tool"])
         return self._call_mcp_via_gateway(tool, arguments)
 
+    def _reset_mcp_session(self) -> None:
+        """丢弃当前 MCP SSE 会话（通常因过期/断开），下次调用时重建新会话。
+
+        reader 为 daemon 线程，close() 仅置 stale 标记，线程会随连接断开自行退出。
+        """
+        with self._mcp_session_lock:
+            if self._mcp_session is not None:
+                try:
+                    self._mcp_session.close()
+                except Exception:
+                    pass
+                self._mcp_session = None
+
     def _call_mcp_via_gateway(self, tool: str, arguments: dict[str, Any]) -> Any:
         """通过 MCP SSE 网关调用工具（标准库，无第三方依赖）。
 
-        JWT 以工具入参 Authorization（Bearer <jwt>）传递；调用处通常已填，此处兜底。
+        会话级错误（HTTP 4xx/5xx、连接断开、响应超时）会自动丢弃旧会话、
+        重建 SSE 连接并重试 1 次；业务参数错误（如未知工具、SQL 语法错误）
+        不属于会话级问题，不触发重试。
         """
-        self._mcp_throttle()
-        args = dict(arguments or {})
-        args.setdefault("Authorization", self._mcp_authorization())
         timeout = float(os.environ.get("FENGSHEN_MCP_TIMEOUT", "120"))
-        result = self._get_mcp_session().call_tool(tool, args, timeout=timeout)
-        return self._parse_mcp_result(result, tool)
+        self._mcp_throttle()
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            args = dict(arguments or {})
+            args.setdefault("Authorization", self._mcp_authorization())
+            try:
+                result = self._get_mcp_session().call_tool(tool, args, timeout=timeout)
+                return self._parse_mcp_result(result, tool)
+            except McpSessionError as e:
+                last_exc = e
+                # 会话级失败：丢弃旧会话 + 清理可能过期的 JWT，下一轮重建
+                self._reset_mcp_session()
+                self._mcp_jwt = ""
+                self._mcp_jwt_expire_at = 0.0
+                if attempt == 0:
+                    print(f"[FengshenBI] MCP 会话失效，重建后重试: {e}", flush=True)
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
 
     def _call_mcp_via_psm(self, tool: str, arguments: dict[str, Any]) -> Any:
         """内网 PSM 方式：依赖字节内网 byted_mcp_client（公网 ECS 不可装/不可达）。
