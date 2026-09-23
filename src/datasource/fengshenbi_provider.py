@@ -1028,7 +1028,8 @@ class FengshenBiProvider(DataSourceProvider):
     def _map_dataset(self, item: dict[str, Any]) -> dict[str, Any]:
         """将风神 BI 数据集对象映射为统一数据集结构。
 
-        TODO(风神BI文档): 字段名按真实响应调整，当前给出常见命名的兼容尝试。
+        列表接口（get_data_set_by_appid）仅返回 id/name/driverName，不含列数与行数；
+        列数需点击进入后通过 get_schema 获取，故 columns 默认为 0 表示「待查」。
         """
         data = item.get("data", item)
         return {
@@ -1037,6 +1038,8 @@ class FengshenBiProvider(DataSourceProvider):
             "description": str(data.get("description") or data.get("desc") or ""),
             "row_count": int(data.get("row_count") or data.get("rowCount") or -1),
             "columns": int(data.get("column_count") or data.get("field_count") or 0),
+            # 数据源驱动类型（如 click_house / magibook），列表层额外信息
+            "data_source_type": str(data.get("driverName") or data.get("driver_name") or ""),
         }
 
     def _map_schema(self, dataset_id: str, resp: dict[str, Any]) -> dict[str, Any]:

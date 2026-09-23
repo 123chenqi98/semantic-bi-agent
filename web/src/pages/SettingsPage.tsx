@@ -188,6 +188,7 @@ interface DsDataset {
   description: string;
   row_count: number;
   columns: number;
+  data_source_type?: string;
 }
 
 function DataSourceCard() {
@@ -359,7 +360,12 @@ function DataSourceCard() {
                   <span style={{ fontSize: 11.5, color: '#565960' }}>{ds.name}</span>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span style={{ fontSize: 11, color: '#898B8F' }}>{ds.columns} 列</span>
+                  {ds.data_source_type && (
+                    <span style={{ fontSize: 10.5, color: '#898B8F', background: '#F5F6F8', padding: '1px 6px', borderRadius: 3, fontFamily: 'var(--font-mono)' }}>{ds.data_source_type}</span>
+                  )}
+                  <span style={{ fontSize: 11, color: '#898B8F' }}>
+                    {ds.columns > 0 ? `${ds.columns} 列` : '列数待查'}
+                  </span>
                   <span style={{ fontSize: 11, color: '#898B8F' }}>
                     {ds.row_count >= 0 ? `${ds.row_count.toLocaleString()} 行` : '行数未知'}
                   </span>
