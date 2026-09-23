@@ -215,7 +215,7 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
 
       {/* 底部版本 */}
       <div style={{ padding: '12px 20px', borderTop: '1px solid #E5E6EB', background: '#FBFBFC' }}>
-        <div className="text-[11px]" style={{ color: '#B0B5BD', letterSpacing: '0.01em' }}>v1.0 · 毕业设计演示项目</div>
+        <div className="text-[11px]" style={{ color: '#B0B5BD', letterSpacing: '0.01em' }}>v1.0 · 智能经营分析平台</div>
       </div>
     </div>
   );

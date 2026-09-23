@@ -10,7 +10,7 @@ export default function Footer() {
         color: '#8A8F99',
       }}
     >
-      <span>语义 BI Agent · 毕业设计演示项目</span>
+      <span>语义 BI Agent · 智能经营分析平台</span>
       <span style={{ color: '#E2E4E9' }}>|</span>
       <a
         href="https://beian.miit.gov.cn/"
