@@ -413,7 +413,7 @@ export default function ChatInput({ onSend, agentMode = false, onToggleAgentMode
               maxHeight: 180,
               lineHeight: 1.7,
               fontFamily: 'inherit',
-              padding: '16px 112px 16px 16px',
+              padding: '14px 16px 4px 16px',
               color: '#252931',
               caretColor: '#B758ED',
             }}
@@ -427,7 +427,7 @@ export default function ChatInput({ onSend, agentMode = false, onToggleAgentMode
             style={{
               position: 'absolute',
               right: 10,
-              bottom: 10,
+              bottom: 8,
               height: 36,
               minWidth: 68,
               paddingLeft: 14,
@@ -447,49 +447,43 @@ export default function ChatInput({ onSend, agentMode = false, onToggleAgentMode
               : <Send size={14} />}
             {state.isLoading ? '生成中' : '发送'}
           </button>
-        </div>
 
-        {!menu && (
-          <div className="flex items-center justify-between" style={{ marginTop: 10 }}>
-            <div className="flex items-center" style={{ gap: 12 }}>
-              {/* 多 Agent 协作开关：与企业 BI 问数页同一位置（输入区底部工具条）同款样式 */}
-              {onToggleAgentMode && (
-                <button
-                  type="button"
-                  onClick={onToggleAgentMode}
-                  title="开启后 SQL 草案由 意图解析→指标检索→SQL生成→审查修正 四个专职 Agent 协作产出，并自动审查自修正"
-                  className="flex items-center"
-                  style={{
-                    gap: 6, height: 26, padding: '0 10px', borderRadius: 8,
-                    border: `1px solid ${agentMode ? '#E6D3FA' : '#E5E6EB'}`,
-                    background: agentMode ? '#FBF7FF' : '#fff', cursor: 'pointer',
-                    fontSize: 11.5, color: agentMode ? '#7A4DB8' : '#565960',
-                  }}
-                >
-                  <GitBranch size={12} style={{ color: agentMode ? '#B758ED' : '#898B8F' }} />
-                  多 Agent 协作
+          {/* 框内底部工具条：多 Agent 开关 + @ 提示（与企业 BI 问数页一致，置于输入卡片内部） */}
+          <div className="flex items-center" style={{ gap: 12, padding: '2px 90px 8px 10px' }}>
+            {onToggleAgentMode && (
+              <button
+                type="button"
+                onClick={onToggleAgentMode}
+                title="开启后 SQL 草案由 意图解析→指标检索→SQL生成→审查修正 四个专职 Agent 协作产出，并自动审查自修正"
+                className="flex items-center"
+                style={{
+                  gap: 6, height: 26, padding: '0 10px', borderRadius: 8,
+                  border: `1px solid ${agentMode ? '#E6D3FA' : '#E5E6EB'}`,
+                  background: agentMode ? '#FBF7FF' : '#fff', cursor: 'pointer',
+                  fontSize: 11.5, color: agentMode ? '#7A4DB8' : '#565960',
+                }}
+              >
+                <GitBranch size={12} style={{ color: agentMode ? '#B758ED' : '#898B8F' }} />
+                多 Agent 协作
+                <span style={{
+                  width: 28, height: 16, borderRadius: 10, position: 'relative',
+                  transition: 'all .2s', display: 'inline-block', flexShrink: 0,
+                  background: agentMode ? '#B758ED' : '#D7D9DE',
+                }}>
                   <span style={{
-                    width: 28, height: 16, borderRadius: 10, position: 'relative',
-                    transition: 'all .2s', display: 'inline-block', flexShrink: 0,
-                    background: agentMode ? '#B758ED' : '#D7D9DE',
-                  }}>
-                    <span style={{
-                      position: 'absolute', top: 2, left: agentMode ? 14 : 2, width: 12, height: 12,
-                      borderRadius: '50%', background: '#fff', transition: 'left .2s',
-                      boxShadow: '0 1px 3px rgba(0,0,0,.2)',
-                    }} />
-                  </span>
-                </button>
-              )}
-              <div className="flex items-center gap-1.5 text-[11px]" style={{ color: '#B0B5BD' }}>
-                <Sparkles size={11} style={{ color: '#B758ED' }} />
-                <span>输入 <kbd style={{ padding: '1px 5px', background: '#F5F6F8', borderRadius: 3, color: '#898B8F', fontFamily: 'var(--font-mono)', fontSize: 11 }}>@</kbd> 唤起技能 · <kbd style={{ padding: '1px 5px', background: '#F5F6F8', borderRadius: 3, color: '#898B8F', fontFamily: 'var(--font-mono)', fontSize: 11 }}>/</kbd> 快捷指令</span>
-              </div>
+                    position: 'absolute', top: 2, left: agentMode ? 14 : 2, width: 12, height: 12,
+                    borderRadius: '50%', background: '#fff', transition: 'left .2s',
+                    boxShadow: '0 1px 3px rgba(0,0,0,.2)',
+                  }} />
+                </span>
+              </button>
+            )}
+            <div className="flex items-center gap-1.5 text-[11px]" style={{ color: '#B0B5BD' }}>
+              <Sparkles size={11} style={{ color: '#B758ED' }} />
+              <span>输入 <kbd style={{ padding: '1px 5px', background: '#F5F6F8', borderRadius: 3, color: '#898B8F', fontFamily: 'var(--font-mono)', fontSize: 11 }}>@</kbd> 唤起技能 · <kbd style={{ padding: '1px 5px', background: '#F5F6F8', borderRadius: 3, color: '#898B8F', fontFamily: 'var(--font-mono)', fontSize: 11 }}>/</kbd> 快捷指令</span>
             </div>
-            <span className="text-[11px]" style={{ color: '#B0B5BD' }}>内容由 AI 生成，请注意甄别</span>
           </div>
-        )}
-        {menu && <div style={{ height: 0 }} />}
+        </div>
       </div>
     </div>
   );
