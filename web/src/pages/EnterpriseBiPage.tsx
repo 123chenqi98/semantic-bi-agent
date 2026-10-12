@@ -101,6 +101,7 @@ const STATUS_STYLE: Record<string, { bg: string; color: string; label: string }>
 const SQL_SOURCE_LABEL: Record<string, string> = {
   'semantic-llm': '语义层 + LLM 生成',
   'llm': '语义层 + LLM 生成',
+  'fengshen-schema-llm': '风神数据集 Schema + LLM 生成',
   'preset-bank': '内置语义题库',
   'dimension-template': '维度下钻模板',
   'bank_fallback': '标准口径题库兜底',

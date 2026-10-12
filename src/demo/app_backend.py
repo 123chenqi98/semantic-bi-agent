@@ -1667,6 +1667,73 @@ def _ent_build_sql_draft(question, history=None, dims=None):
             "  AND order_date BETWEEN '2026-06-01' AND '2026-06-30';"), "fallback"
 
 
+def _ent_fengshen_schema_text(schema):
+    """把风神数据集 schema 渲染为 LLM 可读的紧凑文本，返回 (数据集ID, schema文本)。
+
+    每个字段给业务名 / 字段ID / 类型 / 分区·预聚合标记 / 口径，供 LLM 生成
+    `[数据集ID]` / `[字段ID]` 风格 SQL。
+    """
+    ds_id = str(schema.get("id") or "")
+    cols = schema.get("columns") or []
+    lines = [
+        f"数据表（表名固定写作）: `[{ds_id}]`",
+        f"字段清单（共 {len(cols)} 个；列在 SQL 中必须用反引号包裹字段ID写作 `[字段ID]`）：",
+    ]
+    for c in cols:
+        flags = []
+        if c.get("is_partition"):
+            flags.append("分区字段")
+        if c.get("is_aggregated"):
+            flags.append("预聚合")
+        desc = (c.get("description") or "").strip().replace("\n", " ")
+        if len(desc) > 60:
+            desc = desc[:60]
+        line = (f"- 业务名「{c.get('name')}」 字段ID={c.get('field_id')} "
+                f"类型={c.get('type')}")
+        if flags:
+            line += f" [{'，'.join(flags)}]"
+        if desc:
+            line += f" 口径：{desc}"
+        lines.append(line)
+    return ds_id, "\n".join(lines)
+
+
+def _ent_build_fengshen_sql(question, schema, history=None):
+    """基于风神数据集真实 schema，调用 LLM 生成可执行的风神 SQL（不执行）。
+
+    返回 (sql, "fengshen-schema-llm")。
+    """
+    from src.utils.llm_client import LLMClient, extract_sql_from_response
+
+    ds_id, schema_text = _ent_fengshen_schema_text(schema)
+    system = (
+        "你是字节「风神 BI」的 SQL 生成专家。严格按以下硬规则，只输出一条可直接执行的只读 SQL：\n\n"
+        "【标识符】\n"
+        f"- 表名固定写 `[{ds_id}]`。\n"
+        "- 每个列必须用反引号包裹其字段ID，写作 `[字段ID]`，禁止使用业务中文名。\n\n"
+        "【分区】\n"
+        "- 分区字段必须出现在 WHERE 中。取最新分区时写作：`[分区字段ID]`='${last_date}'"
+        "（${last_date} 宏由服务端解析，原样保留，不要替换成具体日期）。\n\n"
+        "【聚合】\n"
+        "- 预聚合字段是已汇总指标，直接引用，禁止再套 SUM/AVG。\n"
+        "- 非预聚合的度量字段做汇总时用 SUM(...)。\n"
+        "- 需要按某维度拆成多组时，优先用条件聚合一次扫描产出各分组列，避免多字段 GROUP BY：\n"
+        "  SUM(CASE WHEN `[维度字段ID]` = 取值 THEN `[度量字段ID]` ELSE 0 END)。\n\n"
+        "【单位】金额字段单位若为「分」，结果需 /100.0 转为元，并在别名注明。\n\n"
+        "【安全】仅允许 SELECT，不得出现 INSERT/UPDATE/DELETE/DDL。\n\n"
+        "直接输出 SQL，不要解释。"
+    )
+    user = f"{schema_text}\n\n业务问题：{question}"
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": user}]
+    client = LLMClient()
+    reply = client.chat(messages, temperature=0)
+    sql = (extract_sql_from_response(reply) or "").strip()
+    if not sql:
+        raise RuntimeError("LLM 未返回可解析的风神 SQL")
+    return sql, "fengshen-schema-llm"
+
+
 def _ent_recommend_chart(columns, rows):
     """根据结果列/行特征推荐图表类型。"""
     if not columns or not rows:
@@ -1836,7 +1903,26 @@ def api_ent_plan():
         provider = _ent_provider(body.get("source_type"))
 
         matched, time_range, dims, clarifications, assumptions = _ent_detect_requirement(question)
-        sql_draft, sql_source = _ent_build_sql_draft(question, history, dims)
+
+        # 选中风神真实数据集时：拉取该表 schema，让 LLM 生成 `[数据集]/[字段ID]` 风格 SQL；
+        # 无 dataset_id / schema 为 Mock / LLM 失败时，回退原通用草案逻辑。
+        sql_draft, sql_source = "", ""
+        fs_schema = None
+        ds_id_str = str(dataset_id) if dataset_id else ""
+        if ds_id_str and getattr(provider, "source_type", "") == "fengshenBi":
+            try:
+                fs_schema = provider.get_dataset_schema(ds_id_str)
+            except Exception as e:
+                print(f"[ent.plan] 风神 schema 获取失败，回退通用草案: {e}", flush=True)
+                fs_schema = None
+        if fs_schema and not fs_schema.get("mock") and fs_schema.get("columns"):
+            try:
+                sql_draft, sql_source = _ent_build_fengshen_sql(question, fs_schema, history)
+            except Exception as e:
+                print(f"[ent.plan] 风神 schema SQL 生成失败，回退通用草案: {e}", flush=True)
+                sql_draft, sql_source = "", ""
+        if not sql_draft:
+            sql_draft, sql_source = _ent_build_sql_draft(question, history, dims)
 
         plan_id = "plan_" + _uuid.uuid4().hex[:12]
         plan = {
