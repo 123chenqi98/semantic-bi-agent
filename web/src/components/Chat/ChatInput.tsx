@@ -1,14 +1,20 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Sparkles, BookOpen, BarChart3, Clock, Code2, FlaskConical, HelpCircle, Trash2, Lightbulb, ArrowRight, GitBranch } from 'lucide-react';
+import { Send, Loader2, Sparkles, BookOpen, BarChart3, Clock, Code2, FlaskConical, HelpCircle, Trash2, Lightbulb, ArrowRight, GitBranch, Paperclip, X, FileSpreadsheet, AlertCircle } from 'lucide-react';
 import { useApp } from '../../store/ChatContext';
 import { quickQuestions } from '../../mock/data';
-import type { AIMessage } from '../../types';
+import type { AIMessage, UserDatasetRef } from '../../types';
 
 interface ChatInputProps {
   onSend: (question: string) => void;
   // 多 Agent 协作开关（与企业 BI 问数页同款，由 ChatPage 持有状态）
   agentMode?: boolean;
   onToggleAgentMode?: () => void;
+  // 用户上传 CSV 数据集：芯片展示 / 上传 / 移除（由 ChatPage 持有状态）
+  userDataset?: UserDatasetRef | null;
+  uploading?: boolean;
+  uploadError?: string | null;
+  onUploadDataset?: (file: File) => void;
+  onRemoveDataset?: () => void;
 }
 
 interface SkillItem {
@@ -55,13 +61,23 @@ interface MenuState {
   items: Array<SkillItem | SlashItem>;
 }
 
-export default function ChatInput({ onSend, agentMode = false, onToggleAgentMode }: ChatInputProps) {
+export default function ChatInput({ onSend, agentMode = false, onToggleAgentMode,
+  userDataset = null, uploading = false, uploadError = null,
+  onUploadDataset, onRemoveDataset }: ChatInputProps) {
   const { state, dispatch, currentConversation } = useApp();
   const [value, setValue] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && onUploadDataset) onUploadDataset(file);
+    // 重置 value，允许再次选择同一个文件触发 change
+    e.target.value = '';
+  };
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -397,6 +413,64 @@ export default function ChatInput({ onSend, agentMode = false, onToggleAgentMode
             </div>
           )}
 
+          {/* 用户上传数据集芯片 / 上传中 / 上传失败提示（卡片内顶部） */}
+          {(uploading || uploadError || userDataset) && (
+            <div className="flex items-center flex-wrap" style={{ gap: 8, padding: '10px 16px 0 12px' }}>
+              {uploading && (
+                <span className="inline-flex items-center gap-2 text-[12.5px]"
+                  style={{ background: '#FBF7FF', border: '1px solid #E6D3FA', color: '#7A4DB8',
+                    padding: '5px 12px', borderRadius: 8 }}>
+                  <Loader2 size={13} className="animate-spin" />
+                  正在上传并解析 CSV 字段…
+                </span>
+              )}
+              {!uploading && userDataset && (
+                <span className="inline-flex items-center gap-2 text-[12.5px]"
+                  style={{ background: '#FBF7FF', border: '1px solid #E6D3FA',
+                    padding: '4px 6px 4px 10px', borderRadius: 8, maxWidth: '100%' }}>
+                  <FileSpreadsheet size={14} style={{ color: '#B758ED', flexShrink: 0 }} />
+                  <span className="font-medium truncate" style={{ color: '#5B2D8E', maxWidth: 260 }}
+                    title={`将在「${userDataset.name}」上问数`}>
+                    {userDataset.name}
+                  </span>
+                  <span style={{ color: '#9A7DB8', flexShrink: 0 }}>
+                    · {userDataset.rowCount.toLocaleString()} 行 · {userDataset.columnCount} 列
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onRemoveDataset}
+                    title="移除数据集（后续问题将回到演示数据）"
+                    className="inline-flex items-center justify-center"
+                    style={{
+                      width: 18, height: 18, borderRadius: '50%', border: 'none', cursor: 'pointer',
+                      background: 'transparent', color: '#9A7DB8', flexShrink: 0, padding: 0,
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#E6D3FA'; (e.currentTarget as HTMLElement).style.color = '#5B2D8E'; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; (e.currentTarget as HTMLElement).style.color = '#9A7DB8'; }}
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              )}
+              {!uploading && uploadError && (
+                <span className="inline-flex items-center gap-1.5 text-[12px]"
+                  style={{ background: '#FFF1F0', border: '1px solid #FFCCC7', color: '#A8071A',
+                    padding: '5px 10px', borderRadius: 8 }}>
+                  <AlertCircle size={13} style={{ flexShrink: 0 }} />
+                  {uploadError}
+                </span>
+              )}
+            </div>
+          )}
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            style={{ display: 'none' }}
+            onChange={handleFileChosen}
+          />
+
           <textarea
             ref={textareaRef}
             value={value}
@@ -406,7 +480,9 @@ export default function ChatInput({ onSend, agentMode = false, onToggleAgentMode
             onBlur={() => {
               setTimeout(() => setIsFocused(false), 150);
             }}
-            placeholder="输入业务问题，如：上个月各渠道的销售额是多少？（@ 选技能，/ 看指令）"
+            placeholder={userDataset
+              ? `在「${userDataset.name}」上提问，如：各渠道的金额合计是多少？`
+              : '输入业务问题，如：上个月各渠道的销售额是多少？（@ 选技能，/ 看指令）'}
             rows={1}
             className="w-full bg-transparent border-0 outline-none resize-none text-[14px]"
             style={{
@@ -448,8 +524,28 @@ export default function ChatInput({ onSend, agentMode = false, onToggleAgentMode
             {state.isLoading ? '生成中' : '发送'}
           </button>
 
-          {/* 框内底部工具条：多 Agent 开关 + @ 提示（与企业 BI 问数页一致，置于输入卡片内部） */}
+          {/* 框内底部工具条：CSV 上传 + 多 Agent 开关 + @ 提示（与企业 BI 问数页一致，置于输入卡片内部） */}
           <div className="flex items-center" style={{ gap: 12, padding: '2px 90px 8px 10px' }}>
+            {onUploadDataset && (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                title={userDataset ? '重新上传 CSV 数据集（替换当前数据集）' : '上传 CSV 数据集，在你自己的数据上问数（保留 7 天）'}
+                className="flex items-center"
+                style={{
+                  gap: 6, height: 26, padding: '0 10px', borderRadius: 8,
+                  border: `1px solid ${userDataset ? '#E6D3FA' : '#E5E6EB'}`,
+                  background: userDataset ? '#FBF7FF' : '#fff', cursor: uploading ? 'wait' : 'pointer',
+                  fontSize: 11.5, color: userDataset ? '#7A4DB8' : '#565960',
+                }}
+              >
+                {uploading
+                  ? <Loader2 size={12} className="animate-spin" style={{ color: '#B758ED' }} />
+                  : <Paperclip size={12} style={{ color: userDataset ? '#B758ED' : '#898B8F' }} />}
+                {userDataset ? '更换 CSV' : '上传 CSV'}
+              </button>
+            )}
             {onToggleAgentMode && (
               <button
                 type="button"

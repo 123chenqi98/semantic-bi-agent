@@ -72,6 +72,14 @@ export interface AgentTraceStep {
   [k: string]: any;
 }
 
+// 用户上传的 CSV 数据集（AI 对话页「在自己数据上问数」的绑定引用，本地持久化）
+export interface UserDatasetRef {
+  id: string;
+  name: string;
+  rowCount: number;
+  columnCount: number;
+}
+
 export interface AIMessage {
   id: string;
   type: 'ai';
@@ -112,6 +120,10 @@ export interface AIMessage {
   agentPassed?: boolean | null;
   agentRepaired?: boolean;
   datasetName?: string;
+  // 用户上传数据集（CSV→SQLite，7 天临时保留）
+  userDataset?: UserDatasetRef;
+  // 数据集模式草案生成失败的显式错误（此时绝不静默降级到零售演示库/前端 Mock）
+  planError?: string;
   confirmError?: string;
   suggestions?: string[];
   // 第三轮：结果工作台结构化分区字段

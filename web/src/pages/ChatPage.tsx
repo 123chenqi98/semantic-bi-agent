@@ -4,7 +4,7 @@ import UserMessageCard from '../components/Chat/UserMessageCard';
 import AIMessageCard from '../components/Chat/AIMessageCard';
 import ChatInput from '../components/Chat/ChatInput';
 import WelcomePage from '../components/Chat/WelcomePage';
-import type { AIMessage as AIMessageType, SkillTag } from '../types';
+import type { AIMessage as AIMessageType, SkillTag, UserDatasetRef } from '../types';
 import { metrics, timeSemantics } from '../mock/data';
 
 function generateId() {
@@ -124,6 +124,66 @@ export default function ChatPage() {
     try { localStorage.setItem('chat_agent_mode', next ? '1' : '0'); } catch { /* ignore */ }
     return next;
   });
+
+  // 用户上传的 CSV 数据集（无账号体系：数据集引用仅存浏览器 localStorage，7 天后后端惰性清理）
+  const [userDataset, setUserDataset] = useState<UserDatasetRef | null>(() => {
+    try {
+      const raw = localStorage.getItem('chat_user_dataset');
+      return raw ? JSON.parse(raw) as UserDatasetRef : null;
+    } catch { return null; }
+  });
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  // 数据集一旦在服务端确认过期（plan/confirm 返回「重新上传」），同步清除本地引用
+  const clearDataset = () => {
+    setUserDataset(null);
+    try { localStorage.removeItem('chat_user_dataset'); } catch { /* ignore */ }
+  };
+  const handleUploadDataset = async (file: File) => {
+    if (!/\.csv$/i.test(file.name)) {
+      setUploadError('一期仅支持 CSV 文件，请选择 .csv 后缀的文件');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setUploadError('文件不能超过 10MB（行数上限 50,000 行）');
+      return;
+    }
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 60000);
+      const resp = await fetch('/api/datasets/upload', { method: 'POST', body: fd, signal: ctrl.signal });
+      clearTimeout(timer);
+      const j = await resp.json().catch(() => null);
+      if (!resp.ok || !j?.success || !j?.dataset) {
+        throw new Error(j?.error || '上传失败，请检查文件格式后重试');
+      }
+      const d = j.dataset;
+      const ref: UserDatasetRef = {
+        id: d.id, name: d.filename, rowCount: d.row_count, columnCount: d.column_count,
+      };
+      setUserDataset(ref);
+      try { localStorage.setItem('chat_user_dataset', JSON.stringify(ref)); } catch { /* ignore */ }
+    } catch (e: any) {
+      const msg = e?.name === 'AbortError' ? '上传超时（60s），请重试或更换更小的文件'
+        : (e?.message || '上传失败，请重试');
+      setUploadError(msg);
+    } finally {
+      setUploading(false);
+    }
+  };
+  const handleRemoveDataset = () => {
+    const d = userDataset;
+    clearDataset();
+    setUploadError(null);
+    // 服务端删除 best-effort：即使失败也不影响本地切换（后端 7 天 TTL 兜底清理）
+    if (d) {
+      fetch(`/api/datasets/${encodeURIComponent(d.id)}`, { method: 'DELETE' }).catch(() => undefined);
+    }
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -254,13 +314,33 @@ export default function ChatPage() {
       const resp = await fetch('/api/chat/plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, history, pipeline: agentMode ? 'agent_graph' : 'single' }),
+        body: JSON.stringify({
+          question, history,
+          pipeline: agentMode ? 'agent_graph' : 'single',
+          ...(userDataset ? { dataset_id: userDataset.id } : {}),
+        }),
         signal: ctrl.signal,
       });
       clearTimeout(timer);
-      if (!resp.ok) return null;
-      const j = await resp.json();
-      if (!j.success || !j.plan_id) return null;
+      const j = await resp.json().catch(() => null);
+      if (!resp.ok || !j?.success || !j.plan_id) {
+        // 用户数据集模式：业务失败（LLM 限流/数据集过期等）必须显式报错，
+        // 绝不能静默降级到 SSE/零售库/前端 Mock，否则会在错误的数据源上给出结果
+        if (userDataset) {
+          const errText = j?.error || '在你上传的数据集上生成 SQL 草案失败，请点击重试。';
+          if (errText.includes('重新上传')) clearDataset();
+          return {
+            stage: 'done',
+            planError: errText,
+            retryable: true,
+            matchedMetrics: [],
+            sql: '',
+            summary: { key_findings: [] },
+            userDataset: { ...userDataset },
+          } as Partial<AIMessageType>;
+        }
+        return null;
+      }
       return {
         stage: 'draft',
         planId: j.plan_id,
@@ -279,8 +359,22 @@ export default function ChatPage() {
         assumptions: j.assumptions ?? [],
         filters: j.filters ?? [],
         datasetName: j.dataset?.name,
+        userDataset: j.user_dataset
+          ? {
+              id: j.user_dataset.id, name: j.user_dataset.name,
+              rowCount: j.user_dataset.row_count, columnCount: j.user_dataset.column_count,
+            }
+          : (userDataset ? { ...userDataset } : undefined),
       } as Partial<AIMessageType>;
     } catch {
+      if (userDataset) {
+        return {
+          stage: 'done',
+          planError: '连接后端失败，无法在你上传的数据集上生成草案，请点击重试。',
+          retryable: true, matchedMetrics: [], sql: '', summary: { key_findings: [] },
+          userDataset: { ...userDataset },
+        } as Partial<AIMessageType>;
+      }
       return null;
     }
   };
@@ -298,9 +392,16 @@ export default function ChatPage() {
         signal: ctrl.signal,
       });
       clearTimeout(timer);
-      if (!resp.ok) return null;
-      const j = await resp.json();
-      if (!j.result) return null;
+      const j = await resp.json().catch(() => null);
+      if (!resp.ok) {
+        // 用户数据集过期/缺失：后端 400 携带「重新上传」提示，清除本地芯片并回到草案态
+        const errText = j?.error || '执行失败或服务暂不可达，可再次点击「确认 SQL 并执行」重试。';
+        if (errText.includes('重新上传')) clearDataset();
+        return { confirmError: errText } as Partial<AIMessageType>;
+      }
+      if (!j.result) {
+        return { confirmError: j?.error || '执行失败或服务暂不可达，可再次点击「确认 SQL 并执行」重试。' } as Partial<AIMessageType>;
+      }
       return {
         stage: 'done',
         planId,
@@ -318,6 +419,12 @@ export default function ChatPage() {
         pipelineTrace: j.pipelineTrace,
         suggestions: j.suggestions ?? j.suggested_questions ?? [],
         datasetName: j.dataset?.name,
+        userDataset: j.dataset?.kind === 'user_csv'
+          ? {
+              id: j.dataset.id, name: j.dataset.name,
+              rowCount: j.dataset.row_count, columnCount: j.dataset.column_count,
+            }
+          : undefined,
         // 第三轮：结果工作台结构化分区
         conclusion: j.conclusion,
         findings: j.findings,
@@ -599,6 +706,13 @@ LEFT JOIN date_dim dd ON oi.order_date=dd.date WHERE oi.pay_status='已支付' G
       dispatch({ type: 'SET_LOADING', payload: false });
       return;
     }
+    // 用户数据集模式的显式失败：展示错误 + 重试，绝不降级到 SSE/零售库/前端 Mock
+    if (planReply?.planError) {
+      dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId,
+        updates: { ...planReply, isLoading: false, streamingStatus: undefined } as Partial<AIMessageType> } });
+      dispatch({ type: 'SET_LOADING', payload: false });
+      return;
+    }
 
     // plan 不可用（旧版后端/服务异常）→ 降级第一轮的立即执行链路
     let reply: Partial<AIMessageType> | null = null;
@@ -659,7 +773,8 @@ LEFT JOIN date_dim dd ON oi.order_date=dd.date WHERE oi.pay_status='已支付' G
       dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: aiId,
         updates: {
           stage: 'draft', isLoading: false, streamingStatus: undefined,
-          confirmError: '执行失败或服务暂不可达，可再次点击「确认 SQL 并执行」重试。',
+          confirmError: reply?.confirmError
+            || '执行失败或服务暂不可达，可再次点击「确认 SQL 并执行」重试。',
           retryable: true,
         } as Partial<AIMessageType> } });
     }
@@ -669,6 +784,17 @@ LEFT JOIN date_dim dd ON oi.order_date=dd.date WHERE oi.pay_status='已支付' G
   // 手动重试：复用原 AI 消息卡片，重置为加载态后重跑取数管线（不新增用户消息）
   const handleRetry = (question: string, failedAiId: string) => {
     const convId = currentConversation.id;
+    // 守卫：原消息绑定的数据集已过期/被移除时，不允许在零售演示库上盲目重试（答非所问）
+    const failedMsg = currentConversation.messages.find(m => m.id === failedAiId) as AIMessageType | undefined;
+    if (failedMsg?.userDataset && !userDataset) {
+      dispatch({ type: 'UPDATE_MESSAGE', payload: { conversationId: convId, messageId: failedAiId,
+        updates: {
+          isLoading: false, stage: 'done', streamingStatus: undefined,
+          planError: '绑定的数据集已过期或被移除，请重新上传 CSV 后再提问。',
+          retryable: false,
+        } as Partial<AIMessageType> } });
+      return;
+    }
     // 历史中剔除本次失败的 AI 消息，避免把降级 Mock 内容当作上文
     const history = buildHistory(currentConversation.messages.filter(m => m.id !== failedAiId));
     dispatch({ type: 'SET_LOADING', payload: true });
@@ -717,6 +843,11 @@ LEFT JOIN date_dim dd ON oi.order_date=dd.date WHERE oi.pay_status='已支付' G
         onSend={handleSend}
         agentMode={agentMode}
         onToggleAgentMode={toggleAgentMode}
+        userDataset={userDataset}
+        uploading={uploading}
+        uploadError={uploadError}
+        onUploadDataset={handleUploadDataset}
+        onRemoveDataset={handleRemoveDataset}
       />
     </div>
   );

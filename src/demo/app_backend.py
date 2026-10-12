@@ -26,6 +26,8 @@ from flask_cors import CORS
 from src.utils.sql_executor import SQLExecutor
 from src.semantic_layer.semantic_loader import get_semantic_layer
 from src.datasource import get_provider as _get_ds_provider, provider_registry as _ds_registry
+from src.demo import user_datasets as _uds
+from src.demo.user_datasets import DatasetError as _DatasetError
 from src.utils import audit as _audit
 
 DB_PATH = os.path.join(ROOT, "data", "processed", "retail.db")
@@ -556,6 +558,8 @@ def _derive_rules_and_corrections(q: str, matched_item):
 # ---------- Flask 入口 ----------
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
+# 用户数据集上传上限（模块内再按 10MB 做业务校验，这里给少量余量承载 multipart 开销）
+app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
 
 
 @app.route("/api/health", methods=["GET"])
@@ -1304,6 +1308,10 @@ def api_chat_plan():
     if not question:
         return jsonify({"success": False, "error": "问题不能为空"}), 400
     history = body.get("history") or []
+    # 用户上传数据集分支：在其私有 SQLite 上生成草案（只生成不执行），与零售演示库完全隔离
+    dataset_id = (body.get("dataset_id") or "").strip()
+    if dataset_id:
+        return _user_dataset_plan_response(dataset_id, question, history)
     try:
         matched, time_range, dims, clarifications, assumptions = _ent_detect_requirement(question)
 
@@ -1421,6 +1429,16 @@ def api_chat_confirm():
         # 显式拒绝：未确认绝不执行
         return jsonify({"success": False, "stage": "execute",
                         "error": "用户尚未确认 SQL 草案，系统不会执行查询。"}), 400
+
+    # 用户上传数据集分支：在其私有 SQLite 上只读执行已确认草案
+    if plan.get("user_dataset_id"):
+        try:
+            full = _build_user_dataset_response(plan["question"], plan)
+        except _DatasetError as e:
+            return jsonify({"success": False, "stage": "execute", "error": str(e)}), 400
+        full["stage"] = "done"
+        full["plan_id"] = plan_id
+        return jsonify(full)
 
     question = plan["question"]
     history = plan.get("history") or []
@@ -2187,6 +2205,413 @@ def api_ent_confirm():
         "matched_metrics": (plan or {}).get("matched_metrics", []),
         "time_range": (plan or {}).get("time_range", ""),
     })
+
+
+# ==================== 用户上传数据集问数（CSV→SQLite：LLM 草案 / 确认后只读执行） ====================
+
+_USER_DS_MAX_ROWS = 100
+_USER_DS_SQL_SOURCE = "user-dataset-llm"
+
+
+def _user_dataset_system_prompt(meta: dict) -> str:
+    return (
+        "你是数据分析 SQL 专家。用户上传了一个单表 CSV（已导入 SQLite，表名 t），"
+        "请把中文业务问题翻译成一条可直接执行的【只读 SQLite 查询】。\n\n"
+        + _uds.schema_text_for_llm(meta)
+        + "\n\n硬规则：\n"
+        "- 只输出一条 SQLite SELECT/WITH 语句本身，不要解释、不要 markdown、不要序号。\n"
+        '- 列名必须用双引号原样引用（含中文/空格），表名固定写作 t，例如：SELECT "渠道", SUM("金额") FROM t GROUP BY "渠道"。\n'
+        "- 仅允许只读查询，禁止 INSERT/UPDATE/DELETE/DDL 等任何写操作。\n"
+        f"- 结果最多返回 {_USER_DS_MAX_ROWS} 行，需要时加 LIMIT；聚合度量用 SUM/AVG/COUNT/ROUND。\n"
+        "- 日期列为 'YYYY-MM-DD' 文本，按时间筛选时用该形态字符串比较。"
+    )
+
+
+def _user_dataset_generate_sql(question, meta, history=None, prev_sql=None, prev_error=None):
+    """基于用户数据集画像调用 LLM 生成 SQLite SQL（不执行）。
+
+    返回 (sql, prompt_text)。生成结果必须通过只读白名单，否则抛 DatasetError。
+    prev_sql/prev_error 存在时为执行报错后的自修正调用。
+    """
+    from src.utils.llm_client import LLMClient, extract_sql_from_response
+
+    system = _user_dataset_system_prompt(meta)
+    parts = []
+    if history:
+        recent = history[-4:]
+        hist_lines = [
+            f"{'用户问' if h.get('role') == 'user' else '系统答'}: {str(h.get('content'))[:200]}"
+            for h in recent
+        ]
+        parts.append("[对话上下文（追问中的指代替换参考）]\n" + "\n".join(hist_lines))
+    parts.append(f"[业务问题]\n{question}")
+    if prev_sql and prev_error:
+        parts.append(f"[上一版 SQL 执行报错]\nSQL:\n{prev_sql}\n错误: {prev_error}\n请仅输出修正后的 SQL。")
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": "\n\n".join(parts)}]
+    client = LLMClient()
+    reply = client.chat(messages, temperature=0)
+    sql = (extract_sql_from_response(reply) or "").strip().rstrip(";")
+    if not sql:
+        raise RuntimeError("LLM 未返回可解析的 SQL")
+    _uds.assert_readonly_sql(sql)
+    return sql, f"[System]\n{system}\n\n[User]\n{parts[-1]}"
+
+
+def _user_dataset_public_info(meta: dict) -> dict:
+    return {
+        "id": meta["id"],
+        "name": meta["filename"],
+        "kind": "user_csv",
+        "row_count": meta["row_count"],
+        "column_count": meta["column_count"],
+        "columns": [{"name": c["name"], "type": c["type"], "samples": c.get("samples", [])[:5]}
+                    for c in meta["columns"]],
+    }
+
+
+def _user_dataset_plan_response(dataset_id: str, question: str, history: list):
+    """分阶段问数 · 阶段一（用户数据集分支）：只生成草案，绝不执行。"""
+    meta = _uds.load_meta(dataset_id)
+    if not meta:
+        return jsonify({"success": False, "stage": "plan",
+                        "error": "数据集不存在或已过期，请重新上传 CSV。"}), 400
+    try:
+        sql, prompt_text = _user_dataset_generate_sql(question, meta, history=history)
+    except Exception as e:
+        _log("user-dataset.plan", result="FAIL", id=dataset_id,
+             err=f"{type(e).__name__}: {str(e)[:120]}")
+        # 业务失败用 200 + success=false 表达：前端据此提示重试，且不会误降级到零售演示库
+        return jsonify({"success": False, "stage": "plan",
+                        "error": f"在数据集「{meta['filename']}」上生成 SQL 失败"
+                                 f"（{type(e).__name__}）：{str(e)[:200]}"}), 200
+
+    plan_id = "cplan_" + _uuid.uuid4().hex[:12]
+    plan = {
+        "plan_id": plan_id,
+        "question": question,
+        "history": history,
+        "sql_draft": sql,
+        "sql_source": _USER_DS_SQL_SOURCE,
+        "sql_prompt": prompt_text,
+        "matched_metrics": [],
+        "time_range": "",
+        "dimensions": [],
+        "clarification_questions": [],
+        "assumptions": [],
+        "filters": [],
+        "pipeline": "user_dataset",
+        "agent_trace": None,
+        "agent_passed": None,
+        "agent_repaired": False,
+        "graph_backend": None,
+        "user_dataset_id": dataset_id,
+        "created_at": time.time(),
+    }
+    _cache_plan(_CHAT_PLANS, plan, _ENT_PLANS_MAX, _ENT_PLAN_TTL)
+
+    try:
+        _audit.record_event(
+            _audit.EVENT_CHAT_PLAN, result=_audit.RESULT_PENDING,
+            question=question, datasource=f"userCsv:{dataset_id}",
+            staged_confirmed=False, sql_source=_USER_DS_SQL_SOURCE, mock_hit=False,
+            needs_clarification=False, pipeline="user_dataset",
+            **_audit.sql_preview(sql),
+        )
+    except Exception:
+        pass
+    _log("user-dataset.plan", result="ok", id=dataset_id, file=meta["filename"],
+         rows=meta["row_count"], cols=meta["column_count"])
+
+    return jsonify({
+        "success": True,
+        "stage": "plan",
+        "plan_id": plan_id,
+        "question": question,
+        "needs_clarification": False,
+        "clarification_questions": [],
+        "assumptions": [],
+        "matched_metrics": [],
+        "time_range": "",
+        "dimensions": [],
+        "filters": [],
+        "sql_draft": sql,
+        "sql_source": _USER_DS_SQL_SOURCE,
+        "pipeline": "user_dataset",
+        "agent_trace": None,
+        "agent_passed": None,
+        "agent_repaired": False,
+        "graph_backend": None,
+        "dataset": {"id": meta["id"], "name": meta["filename"]},
+        "user_dataset": _user_dataset_public_info(meta),
+    })
+
+
+def _user_dataset_findings(question, cols, rows):
+    """数据驱动的结论/发现（全部来自真实返回行，不编造）。返回 (conclusion, findings)。"""
+    def _num(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    if not cols or not rows:
+        return "查询已执行，但没有命中任何数据行。", ["📌 返回 0 行：请检查问题中的筛选条件或字段取值。"]
+    n_rows, n_cols = len(rows), len(cols)
+    if n_rows == 1 and n_cols == 1:
+        v = rows[0][0]
+        vtxt = f"{v:,.2f}" if _num(v) else str(v)
+        return f"{cols[0]} = {vtxt}", [f"📌 单指标结果：{cols[0]} 为 {vtxt}。"]
+    num_idx = next((i for i in range(n_cols)
+                    if all(i < len(r) and _num(r[i]) for r in rows)), None)
+    if n_rows == 1:
+        parts = []
+        for i in range(n_cols):
+            v = rows[0][i]
+            parts.append(f"{cols[i]} 为 {v:,.2f}" if _num(v) else f"{cols[i]} 为 {v}")
+        return f"查询返回 1 行结果：{parts[0]}。", ["📌 " + "；".join(parts[:4]) + "。"]
+    if num_idx is not None:
+        metric, dim = cols[num_idx], cols[0]
+        top = max(rows, key=lambda r: r[num_idx] if _num(r[num_idx]) else float("-inf"))
+        vals = [r[num_idx] for r in rows if _num(r[num_idx])]
+        tv = top[num_idx]
+        conclusion = f"共 {n_rows} 个{dim}分组，「{top[0]}」的{metric}最高，为 {tv:,.2f}。"
+        findings = [f"📌 共 {n_rows} 个{dim}分组；「{top[0]}」的{metric}最高，为 {tv:,.2f}。"]
+        total = sum(vals)
+        if total:
+            findings.append(f"📊 「{top[0]}」在合计{metric}中占比约 {tv * 100.0 / total:.1f}%。")
+        bot = min(rows, key=lambda r: r[num_idx] if _num(r[num_idx]) else float("inf"))
+        if n_rows >= 2 and bot[0] != top[0]:
+            findings.append(f"📉 最低为「{bot[0]}」（{bot[num_idx]:,.2f}），最高与最低相差 {tv - bot[num_idx]:,.2f}。")
+        return conclusion, findings[:3]
+    return (f"查询返回 {n_rows} 行 × {n_cols} 列明细数据。",
+            [f"📌 返回 {n_rows} 行 × {n_cols} 列，列顺序：{' → '.join(cols)}。"])
+
+
+def _user_dataset_suggestions(meta: dict):
+    """基于字段画像生成下一步追问建议（纯规则，不额外调用 LLM）。"""
+    def _is_id_like(name: str) -> bool:
+        up = name.upper()
+        return ("ID" in up) or any(k in name for k in ("编号", "序号", "单号", "编码"))
+
+    date_cols = [c["name"] for c in meta["columns"] if c["type"] == "date"]
+    text_cols = [c["name"] for c in meta["columns"] if c["type"] == "text"]
+    # 度量列排除 ID/编号类整型字段（如订单ID），避免给出「订单ID 的变化趋势」这类无意义建议
+    num_cols = [c["name"] for c in meta["columns"]
+                if c["type"] in ("integer", "real") and not _is_id_like(c["name"])]
+    pool = []
+    if date_cols and num_cols:
+        pool.append(f"按「{date_cols[0]}」看「{num_cols[0]}」的变化趋势如何？")
+    if text_cols and num_cols:
+        pool.append(f"各「{text_cols[0]}」的「{num_cols[0]}」对比是怎样的？")
+    if text_cols:
+        pool.append(f"「{text_cols[0]}」的分布占比如何？")
+    if num_cols:
+        pool.append(f"「{num_cols[0]}」的合计、平均、最大和最小分别是多少？")
+    return pool[:3]
+
+
+def _build_user_dataset_response(question: str, plan: dict) -> dict:
+    """分阶段问数 · 阶段二（用户数据集分支）：执行【用户已确认的 SQL】，构造工作台响应。"""
+    t_start = time.time()
+    dataset_id = plan["user_dataset_id"]
+    history = plan.get("history") or []
+    meta = _uds.load_meta(dataset_id)
+    if not meta:
+        raise _DatasetError("数据集不存在或已过期（保留期 7 天），请重新上传 CSV。")
+
+    sql = (plan.get("sql_draft") or "").strip()
+    _uds.assert_readonly_sql(sql)
+    prompt_text = plan.get("sql_prompt", "")
+    uds_executor = _uds.get_executor(dataset_id)
+
+    exec_result = uds_executor.execute(sql, max_rows=_USER_DS_MAX_ROWS)
+    repaired = False
+    if not exec_result.get("success"):
+        # 自修复 1 轮：把数据库报错回喂 LLM，修正后重新校验并执行
+        try:
+            fixed, prompt_text = _user_dataset_generate_sql(
+                question, meta, history=history,
+                prev_sql=sql, prev_error=exec_result.get("error"))
+            new_exec = uds_executor.execute(fixed, max_rows=_USER_DS_MAX_ROWS)
+            if new_exec.get("success"):
+                sql, exec_result, repaired = fixed, new_exec, True
+        except Exception as e:
+            print(f"[user-dataset.confirm] 自修正失败: {type(e).__name__}: {e}", flush=True)
+
+    success = bool(exec_result.get("success"))
+    cols = exec_result.get("columns", [])
+    rows = [list(r) for r in exec_result.get("rows", [])]
+    err = exec_result.get("error")
+    elapsed_ms = round((time.time() - t_start) * 1000, 1)
+
+    conclusion, findings = _user_dataset_findings(question, cols, rows)
+    findings.append(f"⏱️ 在你上传的数据上生成 SQL 并执行，共耗时 {round(time.time() - t_start, 2)} 秒")
+    if repaired:
+        findings.append("🛠️ 首版 SQL 执行报错，已根据数据库错误信息自动修正后重新执行成功")
+    if success and exec_result.get("truncated"):
+        findings.append(f"📄 结果超过 {_USER_DS_MAX_ROWS} 行已截断，可增加筛选条件缩小范围")
+
+    chart = _ent_recommend_chart(cols, rows) if success and rows else \
+        {"type": "table", "xField": None, "reason": "无结果数据，使用表格展示"}
+
+    warnings = [
+        f"数据来自你上传的文件「{meta['filename']}」（{meta['row_count']:,} 行 × {meta['column_count']} 列），"
+        "分析结论仅基于该文件内容，服务器临时保留 7 天后自动删除。",
+        "全程只读查询：系统不会对原始数据执行任何写操作；业务决策请结合实际情况核对。",
+    ]
+    if not success:
+        warnings.insert(0, f"本次 SQL 执行未成功：{err}；可点击「重试」让模型修正后重新查询。")
+
+    provenance = {
+        "dataset": f"用户上传 CSV：{meta['filename']}（{meta['row_count']:,} 行 × {meta['column_count']} 列）",
+        "timeRange": "",
+        "fixedFilters": [],
+        "executionMode": "用户确认 SQL 草案后，在其上传数据上只读执行",
+        "stagedConfirm": True,
+        "bankFallback": False,
+        "mockMode": False,
+    }
+    usable = success and bool(cols) and bool(rows)
+    usage_verdict = {
+        "usable": usable,
+        "label": "基于你上传数据的真实查询结果" if usable else "数据不足/查询失败，暂不可用于判断",
+        "reason": ("结果为上传 CSV 导入后的真实 SQLite 查询输出。"
+                   if usable else "查询未返回有效数据行或执行失败，请调整问题后重试。"),
+    }
+
+    type_cn = {"integer": "整数", "real": "小数", "date": "日期", "text": "文本"}
+    field_desc = "、".join(f"{c['name']}:{type_cn.get(c['type'], c['type'])}" for c in meta["columns"][:12])
+    exec_step = (
+        {"step": 5, "name": "在用户数据上执行", "status": "ok" if success else "error",
+         "detail": f"返回 {len(rows)} 行" + ("（已截断）" if exec_result.get("truncated") else "")
+                   if success else f"执行报错：{str(err)[:80]}"}
+    )
+    pipeline_trace = {
+        "mode": "用户数据集 · 真实LLM + 只读SQLite",
+        "baseline_snapshot": {"sql": "", "success": False, "row_count": 0, "error": None},
+        "sql_snapshot": sql,
+        "rules_applied": ["只读 SELECT 白名单", "列名双引号引用", f"结果上限 {_USER_DS_MAX_ROWS} 行", "7 天临时保留"],
+        "errors_corrected": (["LLM 首版 SQL 执行报错，已按错误信息自修正"] if repaired else []),
+        "steps": [
+            {"step": 1, "name": "数据集识别", "status": "ok",
+             "detail": f"用户上传文件「{meta['filename']}」，{meta['row_count']:,} 行 × {meta['column_count']} 列"},
+            {"step": 2, "name": "字段画像", "status": "ok",
+             "detail": field_desc + ("…" if len(meta["columns"]) > 12 else "")},
+            {"step": 3, "name": "SQL 生成", "status": "ok",
+             "detail": "LLM 基于字段名/类型/样例值与对话上下文生成 SQLite 查询"},
+            {"step": 4, "name": "只读安全校验", "status": "ok",
+             "detail": "SELECT 白名单静态校验 + SQLite 只读 URI 双重约束"},
+            exec_step,
+        ],
+    }
+
+    resp = {
+        "question": question,
+        "matchedMetrics": [],
+        "timeRange": "",
+        "matchedDimensions": None,
+        "sql": sql,
+        "baselineSql": None,
+        "baselinePrompt": "",
+        "experimentPrompt": prompt_text,
+        "result": {
+            "columns": cols,
+            "rows": rows,
+            "rowCount": len(rows),
+            "executionTimeMs": exec_result.get("elapsed_ms"),
+            "success": success,
+            "error": err,
+        },
+        "baselineResult": {"columns": [], "rows": [], "rowCount": 0,
+                           "executionTimeMs": None, "success": None, "error": None},
+        "summary": {"key_findings": findings},
+        "pipelineTrace": pipeline_trace,
+        "meta": {
+            "mode": "user-dataset",
+            "real_llm_enabled": True,
+            "bank_fallback": False,
+            "staged_confirm": True,
+            "elapsed_ms": elapsed_ms,
+            "user_dataset": True,
+        },
+        "conclusion": conclusion,
+        "findings": findings[:4],
+        "chartSpec": chart,
+        "warnings": warnings,
+        "provenance": provenance,
+        "usageVerdict": usage_verdict,
+        "suggestions": _user_dataset_suggestions(meta),
+        "suggested_questions": _user_dataset_suggestions(meta),
+        "dataset": {"id": meta["id"], "name": meta["filename"], "kind": "user_csv",
+                    "row_count": meta["row_count"], "column_count": meta["column_count"]},
+    }
+
+    try:
+        _audit.record_event(
+            _audit.EVENT_CHAT_CONFIRM,
+            result=_audit.RESULT_SUCCESS if success else _audit.RESULT_FAILED,
+            question=question, datasource=f"userCsv:{dataset_id}",
+            staged_confirmed=True, sql_source=_USER_DS_SQL_SOURCE, mock_hit=False,
+            row_count=len(rows), duration_ms=elapsed_ms,
+            error_type=None if success else "sql_exec_failed",
+            error_message=None if success else str(err or "查询执行失败")[:300],
+            **_audit.sql_preview(sql),
+        )
+    except Exception:
+        pass
+    _log("user-dataset.confirm", result="ok" if success else "FAIL",
+         id=dataset_id, rows=len(rows), repaired=repaired, ms=elapsed_ms,
+         err=(None if success else str(err)[:100]))
+    return resp
+
+
+# ==================== 用户上传数据集（一期 CSV：上传 / 列表 / 预览 / 删除） ====================
+
+@app.route("/api/datasets/upload", methods=["POST"])
+def api_datasets_upload():
+    """上传 CSV：解析 + 字段画像 + 落 SQLite，返回数据集 meta（含列样例与前 20 行预览）。"""
+    f = request.files.get("file")
+    if f is None:
+        return jsonify({"success": False, "error": "未收到上传文件（表单字段名需为 file）"}), 400
+    raw = f.read()
+    try:
+        meta = _uds.save_dataset(f.filename or "dataset.csv", raw)
+    except _DatasetError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        _log("datasets.upload", result="FAIL", err=f"{type(e).__name__}: {str(e)[:120]}")
+        return jsonify({"success": False, "error": f"文件解析失败：{type(e).__name__}: {e}"}), 500
+    try:
+        preview = _uds.preview_dataset(meta["id"], limit=20)
+    except Exception:
+        preview = None
+    _log("datasets.upload", result="ok", id=meta["id"], rows=meta["row_count"], cols=meta["column_count"])
+    return jsonify({"success": True, "dataset": meta, "preview": preview})
+
+
+@app.route("/api/datasets", methods=["GET"])
+def api_datasets_list():
+    """列出当前服务器上的有效数据集（无账号体系，按 TTL 自动过期）。"""
+    try:
+        _uds.cleanup_expired()
+    except Exception:
+        pass
+    return jsonify({"success": True, "datasets": _uds.list_datasets()})
+
+
+@app.route("/api/datasets/<dataset_id>/preview", methods=["GET"])
+def api_datasets_preview(dataset_id):
+    try:
+        limit = int(request.args.get("limit", 20))
+        return jsonify({"success": True, "preview": _uds.preview_dataset(dataset_id, limit=limit)})
+    except _DatasetError as e:
+        return jsonify({"success": False, "error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"success": False, "error": f"预览失败：{type(e).__name__}: {e}"}), 500
+
+
+@app.route("/api/datasets/<dataset_id>", methods=["DELETE"])
+def api_datasets_delete(dataset_id):
+    ok = _uds.delete_dataset(dataset_id)
+    return jsonify({"success": True, "deleted": ok})
 
 
 # ---------- 生产环境：托管前端静态文件（Render / 单机部署） ----------

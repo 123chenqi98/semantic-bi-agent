@@ -322,6 +322,33 @@ export default function AIMessageCard({ message, onRetry, onConfirm, onAsk }: AI
           </div>
         )}
 
+        {/* 用户数据集模式：草案生成失败的显式错误（限流/服务异常），可重试且绝不展示伪造结果 */}
+        {message.planError && !message.isLoading && (
+          <div style={{
+            marginBottom: 12, background: '#FFF1F0', border: '1px solid #FFCCC7',
+            borderRadius: 4, padding: '10px 14px', display: 'flex',
+            alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          }}>
+            <div className="flex items-center gap-2 text-[12.5px]" style={{ color: '#A8071A', lineHeight: 1.6 }}>
+              <AlertTriangle size={14} style={{ color: '#FF4D4F', flexShrink: 0 }} />
+              <span>{message.planError}</span>
+            </div>
+            {message.retryable && onRetry && (
+              <button
+                type="button"
+                onClick={() => onRetry(message.question)}
+                className="inline-flex items-center gap-1 text-[12px] font-medium"
+                style={{
+                  flexShrink: 0, padding: '4px 12px', borderRadius: 4,
+                  border: '1px solid #FF4D4F', background: '#fff', color: '#FF4D4F', cursor: 'pointer',
+                }}
+              >
+                <RefreshCw size={12} /> 重试
+              </button>
+            )}
+          </div>
+        )}
+
         {/* 分阶段流程 · 阶段一：需求理解 + SQL 草案（待用户确认，尚未执行） */}
         {!isDictOnly && message.stage === 'draft' && !message.isLoading && (
           <DraftConfirmCard message={message} onConfirm={onConfirm} />
