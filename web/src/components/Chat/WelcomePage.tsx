@@ -1,14 +1,13 @@
-import { MessageSquarePlus, TrendingUp, LineChart, ShieldCheck } from 'lucide-react';
+import { MessageSquarePlus, TrendingUp, ShieldCheck } from 'lucide-react';
 import { exampleGroups } from '../../mock/data';
 
 interface WelcomePageProps {
   onSelectQuestion: (q: string) => void;
 }
 
-// 分组图标：业务问数 / 趋势分析 / 结果追问与图表
+// 分组图标：业务问数 / 趋势分析
 function GroupIcon({ groupKey }: { groupKey: string }) {
   if (groupKey === 'trend') return <TrendingUp size={14} style={{ color: '#B758ED', flexShrink: 0 }} />;
-  if (groupKey === 'followup') return <LineChart size={14} style={{ color: '#B758ED', flexShrink: 0 }} />;
   return <MessageSquarePlus size={14} style={{ color: '#B758ED', flexShrink: 0 }} />;
 }
 
@@ -56,9 +55,9 @@ export default function WelcomePage({ onSelectQuestion }: WelcomePageProps) {
           </div>
         </div>
 
-        {/* 三类典型任务示例 */}
+        {/* 典型任务示例 */}
         <div className="w-full" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          {exampleGroups.map(group => (
+          {exampleGroups.filter(g => g.key !== 'followup').map(group => (
             <div key={group.key}>
               <div className="flex items-center gap-2 mb-2">
                 <GroupIcon groupKey={group.key} />
