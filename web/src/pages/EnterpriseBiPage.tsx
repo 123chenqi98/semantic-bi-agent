@@ -3,6 +3,7 @@ import {
   Building2, CheckCircle2, AlertTriangle, Loader2, FileText,
   Target, Clock, Tag, Database, ShieldCheck, RefreshCw, Lightbulb, Table2,
   AtSign, Paperclip, Settings, ChevronDown, Plus, ChevronRight, ArrowUpRight, Sparkles,
+  GitBranch, XCircle,
 } from 'lucide-react';
 import ResultChart from '../components/common/ResultChart';
 import { useApp } from '../store/ChatContext';
@@ -10,6 +11,16 @@ import { useApp } from '../store/ChatContext';
 // ==================== 类型定义（与后端 /api/enterprise-bi/* 契约对齐） ====================
 
 interface MatchedMetric { id: string; name: string }
+
+// 多 Agent 协作轨迹单步（与后端 trace_step 结构对齐）
+interface AgentTraceStep {
+  node: string;
+  status: string;
+  detail: string;
+  round?: number;
+  row_count?: number | null;
+  [key: string]: any;
+}
 
 interface PlanResponse {
   success: boolean;
@@ -27,6 +38,11 @@ interface PlanResponse {
   dataset_id: string | null;
   connection_status: string;
   is_real: boolean;
+  pipeline?: string;
+  agent_trace?: AgentTraceStep[] | null;
+  agent_passed?: boolean | null;
+  agent_repaired?: boolean;
+  graph_backend?: string | null;
   error?: string;
 }
 
@@ -102,6 +118,8 @@ const SQL_SOURCE_LABEL: Record<string, string> = {
   'semantic-llm': '语义层 + LLM 生成',
   'llm': '语义层 + LLM 生成',
   'fengshen-schema-llm': '风神数据集 Schema + LLM 生成',
+  'agent-graph-llm': '多 Agent 协作 · 真实模型',
+  'agent-graph-mock': '多 Agent 协作 · 离线演示',
   'preset-bank': '内置语义题库',
   'dimension-template': '维度下钻模板',
   'bank_fallback': '标准口径题库兜底',
@@ -125,6 +143,17 @@ export default function EnterpriseBiPage() {
   const [selectedDataset, setSelectedDataset] = useState<string | null>(null);
   const [showAllDatasets, setShowAllDatasets] = useState(false);
   const [deepResearch, setDeepResearch] = useState(false);
+  // 多 Agent 协作开关（Intent→Matcher→Generator→Critic 风神方言链路），本地持久化，默认关
+  const [agentMode, setAgentMode] = useState<boolean>(() => {
+    try { return localStorage.getItem('ent_agent_mode') === '1'; } catch { return false; }
+  });
+  function toggleAgentMode() {
+    setAgentMode(v => {
+      const nv = !v;
+      try { localStorage.setItem('ent_agent_mode', nv ? '1' : '0'); } catch { /* ignore */ }
+      return nv;
+    });
+  }
   const [businessLine, setBusinessLine] = useState(BUSINESS_LINES[0].id);
   const [lineOpen, setLineOpen] = useState(false);
   const [mentionOpen, setMentionOpen] = useState(false);
@@ -180,7 +209,10 @@ export default function EnterpriseBiPage() {
     fetch('/api/enterprise-bi/plan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: q, dataset_id: selectedDataset, deep: deepResearch }),
+      body: JSON.stringify({
+        question: q, dataset_id: selectedDataset, deep: deepResearch,
+        pipeline: agentMode ? 'agent_graph' : 'single',
+      }),
     })
       .then(r => r.json())
       .then((d: PlanResponse) => {
@@ -372,6 +404,20 @@ export default function EnterpriseBiPage() {
                     )}
                   </div>
 
+                  {/* 多 Agent 协作开关：意图解析 → Schema字段匹配 → SQL生成 → 静态审查自修正 */}
+                  <button
+                    onClick={toggleAgentMode}
+                    title="多 Agent 协作：意图解析 → 字段匹配 → SQL 生成 → 风神方言静态审查与自修正（图内不执行，取数仍需确认）"
+                    className="flex items-center"
+                    style={{ gap: 7, height: 34, padding: '0 12px', borderRadius: 9, border: `1px solid ${agentMode ? '#E6D3FA' : '#E5E6EB'}`, background: agentMode ? '#FBF7FF' : '#fff', cursor: 'pointer', fontSize: 12.5, color: agentMode ? '#7A4DB8' : '#565960' }}
+                  >
+                    <GitBranch size={13} style={{ color: agentMode ? '#B758ED' : '#898B8F' }} />
+                    多 Agent 协作
+                    <span style={{ width: 32, height: 18, borderRadius: 11, background: agentMode ? GRADIENT_BTN : '#D7D9DE', position: 'relative', transition: 'all .2s', display: 'inline-block', flexShrink: 0 }}>
+                      <span style={{ position: 'absolute', top: 2, left: agentMode ? 16 : 2, width: 14, height: 14, borderRadius: '50%', background: '#fff', transition: 'all .2s', boxShadow: '0 1px 3px rgba(0,0,0,.2)' }} />
+                    </span>
+                  </button>
+
                   {/* 深入研究开关 */}
                   <button
                     onClick={() => setDeepResearch(v => !v)}
@@ -535,6 +581,70 @@ function StepIndicator({ stage }: { stage: string }) {
 }
 
 // ==================== 阶段一：需求确认 + SQL 草案卡片 ====================
+// 多 Agent 轨迹节点中文名
+const AGENT_NODE_LABEL: Record<string, string> = {
+  intent: '意图解析',
+  matcher: '字段匹配',
+  generator: 'SQL 生成',
+  critic: '审查修正',
+  finalize: '收口',
+  pipeline: '链路',
+};
+
+const AGENT_STATUS_STYLE: Record<string, { color: string; bg: string; icon: React.ReactNode }> = {
+  ok: { color: '#1677FF', bg: '#E8F4FD', icon: <CheckCircle2 size={11} /> },
+  degraded: { color: '#B25E00', bg: '#FFF7E6', icon: <AlertTriangle size={11} /> },
+  repair: { color: '#D46B08', bg: '#FFF3E8', icon: <RefreshCw size={11} /> },
+  reject: { color: '#C63838', bg: '#FFF1F0', icon: <XCircle size={11} /> },
+  pass: { color: '#0F8A2F', bg: '#EAFBF1', icon: <ShieldCheck size={11} /> },
+  fallback: { color: '#B25E00', bg: '#FFF7E6', icon: <AlertTriangle size={11} /> },
+  failed: { color: '#C63838', bg: '#FFF1F0', icon: <XCircle size={11} /> },
+};
+
+// 多 Agent 协作轨迹条（企业 BI 草案卡内展示，与 AI 对话页同款视觉）
+function AgentTraceMini({ trace, repaired, backend }: {
+  trace: AgentTraceStep[]; repaired?: boolean; backend?: string | null;
+}) {
+  if (!trace || trace.length === 0) return null;
+  const backendLabel: Record<string, string> = {
+    langgraph: 'LangGraph 编排', shim: '轻量编排', fallback: '已回退单体',
+  };
+  return (
+    <div style={{ border: '1px solid #EADDFA', background: '#FCFAFF', borderRadius: 4, padding: '10px 12px', marginBottom: 14 }}>
+      <div className="flex items-center" style={{ gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+        <GitBranch size={13} style={{ color: '#B758ED' }} />
+        <span style={{ fontSize: 12.5, fontWeight: 600, color: '#5A2D8C' }}>多 Agent 协作轨迹</span>
+        {repaired && (
+          <span style={{ fontSize: 10.5, padding: '1px 7px', borderRadius: 3, background: '#FFF3E8', color: '#D46B08', fontWeight: 600 }}>
+            触发自修正
+          </span>
+        )}
+        {backend && (
+          <span style={{ fontSize: 10.5, padding: '1px 7px', borderRadius: 3, background: '#F0EBFA', color: '#7A4DB8' }}>
+            {backendLabel[backend] || backend}
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', rowGap: 6 }}>
+        {trace.map((s, i) => {
+          const st = AGENT_STATUS_STYLE[s.status] || AGENT_STATUS_STYLE.ok;
+          return (
+            <div key={i} className="flex items-center" style={{ gap: 8, fontSize: 12, lineHeight: 1.5 }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, borderRadius: '50%', background: st.bg, color: st.color, flex: '0 0 auto' }}>
+                {st.icon}
+              </span>
+              <span style={{ minWidth: 56, fontWeight: 600, color: '#3A3D45', flex: '0 0 auto' }}>
+                {AGENT_NODE_LABEL[s.node] || s.node}
+              </span>
+              <span style={{ color: '#6B6E76' }}>{s.detail}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function PlanCard({ plan, onConfirm, confirming, done }: {
   plan: PlanResponse; onConfirm: () => void; confirming: boolean; done: boolean;
 }) {
@@ -589,6 +699,11 @@ function PlanCard({ plan, onConfirm, confirming, done }: {
         <ElementTag icon={<Tag size={11} />} label="分析维度"
           values={plan.dimensions.length ? plan.dimensions : ['整体汇总']} highlight={plan.dimensions.length > 0} />
       </div>
+
+      {/* 多 Agent 协作轨迹（pipeline=agent_graph 时返回） */}
+      {plan.agent_trace && plan.agent_trace.length > 0 && (
+        <AgentTraceMini trace={plan.agent_trace} repaired={plan.agent_repaired} backend={plan.graph_backend} />
+      )}
 
       {/* SQL 草案 */}
       <div className="text-[12px] font-semibold mb-2" style={{ color: '#252931' }}>

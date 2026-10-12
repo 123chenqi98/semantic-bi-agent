@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../store/ChatContext';
 import UserMessageCard from '../components/Chat/UserMessageCard';
 import AIMessageCard from '../components/Chat/AIMessageCard';
@@ -114,6 +114,16 @@ export default function ChatPage() {
   const { state, dispatch, currentConversation } = useApp();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const disableBackend = (import.meta as any).env?.VITE_DISABLE_BACKEND === '1';
+
+  // 多 Agent 协作开关（Intent→Matcher→Generator→Critic），默认关闭走单体链路；选择本地持久化
+  const [agentMode, setAgentMode] = useState<boolean>(() => {
+    try { return localStorage.getItem('chat_agent_mode') === '1'; } catch { return false; }
+  });
+  const toggleAgentMode = () => setAgentMode(v => {
+    const next = !v;
+    try { localStorage.setItem('chat_agent_mode', next ? '1' : '0'); } catch { /* ignore */ }
+    return next;
+  });
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -244,7 +254,7 @@ export default function ChatPage() {
       const resp = await fetch('/api/chat/plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, history }),
+        body: JSON.stringify({ question, history, pipeline: agentMode ? 'agent_graph' : 'single' }),
         signal: ctrl.signal,
       });
       clearTimeout(timer);
@@ -257,6 +267,11 @@ export default function ChatPage() {
         question: j.question ?? question,
         sql: j.sql_draft ?? '',
         sqlSource: j.sql_source,
+        pipeline: j.pipeline,
+        graphBackend: j.graph_backend ?? null,
+        agentTrace: j.agent_trace ?? undefined,
+        agentPassed: (j.agent_passed ?? null) as boolean | null,
+        agentRepaired: !!j.agent_repaired,
         matchedMetrics: j.matched_metrics ?? [],
         timeRange: j.time_range || undefined,
         matchedDimensions: j.dimensions ?? [],
@@ -698,6 +713,34 @@ LEFT JOIN date_dim dd ON oi.order_date=dd.date WHERE oi.pay_status='已支付' G
           </div>
         </>
       )}
+      <div style={{ maxWidth: 880, margin: '0 auto', width: '100%', padding: '0 24px 6px' }}>
+        <button
+          type="button"
+          onClick={toggleAgentMode}
+          title="开启后 SQL 草案由 意图解析→指标检索→SQL生成→审查修正 四个专职 Agent 协作产出"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+            fontSize: 12, padding: '4px 12px', borderRadius: 999,
+            border: `1px solid ${agentMode ? '#B758ED' : '#DCDEE3'}`,
+            background: agentMode ? '#F6EFFE' : '#fff',
+            color: agentMode ? '#7A4DB8' : '#565960', fontWeight: agentMode ? 600 : 400,
+          }}
+        >
+          <span style={{
+            width: 26, height: 15, borderRadius: 999, position: 'relative', transition: 'all .2s',
+            background: agentMode ? '#B758ED' : '#C9CBD2',
+          }}>
+            <span style={{
+              position: 'absolute', top: 1.5, left: agentMode ? 13 : 1.5, width: 12, height: 12,
+              borderRadius: '50%', background: '#fff', transition: 'left .2s',
+            }} />
+          </span>
+          多 Agent 协作{agentMode ? ' · 已开启' : ''}
+          <span style={{ color: agentMode ? '#A06FD6' : '#A8ABB2', fontWeight: 400 }}>
+            意图 → 检索 → 生成 → 审查自修正
+          </span>
+        </button>
+      </div>
       <ChatInput onSend={handleSend} />
     </div>
   );

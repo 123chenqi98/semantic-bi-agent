@@ -17,10 +17,79 @@ interface AIMessageCardProps {
 // 草案来源标签（与后端 sql_source 对齐）
 const SQL_SOURCE_LABEL: Record<string, string> = {
   'semantic-llm': '语义层 + LLM 生成',
+  llm: '语义层 + LLM 生成',
+  'agent-graph-llm': '多 Agent 协作 · 真实模型',
+  'agent-graph-mock': '多 Agent 协作 · 离线演示',
   'preset-bank': '内置语义题库',
   'dimension-template': '维度下钻模板',
   fallback: '兜底模板',
 };
+
+// 多 Agent 轨迹节点中文名
+const AGENT_NODE_LABEL: Record<string, string> = {
+  intent: '意图解析',
+  matcher: '指标匹配',
+  generator: 'SQL 生成',
+  critic: '审查修正',
+  finalize: '收口',
+  pipeline: '链路',
+};
+
+const AGENT_STATUS_STYLE: Record<string, { color: string; bg: string; icon: React.ReactNode }> = {
+  ok: { color: '#1677FF', bg: '#E8F4FD', icon: <CheckCircle2 size={11} /> },
+  degraded: { color: '#B25E00', bg: '#FFF7E6', icon: <AlertTriangle size={11} /> },
+  repair: { color: '#D46B08', bg: '#FFF3E8', icon: <RefreshCw size={11} /> },
+  reject: { color: '#C63838', bg: '#FFF1F0', icon: <XCircle size={11} /> },
+  pass: { color: '#0F8A2F', bg: '#EAFBF1', icon: <ShieldCheck size={11} /> },
+  fallback: { color: '#B25E00', bg: '#FFF7E6', icon: <AlertTriangle size={11} /> },
+  failed: { color: '#C63838', bg: '#FFF1F0', icon: <XCircle size={11} /> },
+};
+
+function AgentTraceBar({ message }: { message: AIMessageType }) {
+  const trace = message.agentTrace ?? [];
+  if (trace.length === 0) return null;
+  const backendLabel: Record<string, string> = { langgraph: 'LangGraph 编排', shim: '轻量编排', fallback: '已回退单体' };
+  return (
+    <div style={{
+      border: '1px solid #EADDFA', background: '#FCFAFF', borderRadius: 4,
+      padding: '10px 12px', marginBottom: 12,
+    }}>
+      <div className="flex items-center" style={{ gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+        <GitBranch size={13} style={{ color: '#B758ED' }} />
+        <span style={{ fontSize: 12.5, fontWeight: 600, color: '#5A2D8C' }}>多 Agent 协作轨迹</span>
+        {message.agentRepaired && (
+          <span style={{ fontSize: 10.5, padding: '1px 7px', borderRadius: 3, background: '#FFF3E8', color: '#D46B08', fontWeight: 600 }}>
+            触发自修正
+          </span>
+        )}
+        {message.graphBackend && (
+          <span style={{ fontSize: 10.5, padding: '1px 7px', borderRadius: 3, background: '#F0EBFA', color: '#7A4DB8' }}>
+            {backendLabel[message.graphBackend] || message.graphBackend}
+          </span>
+        )}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', rowGap: 6 }}>
+        {trace.map((s, i) => {
+          const st = AGENT_STATUS_STYLE[s.status] || AGENT_STATUS_STYLE.ok;
+          return (
+            <div key={i} className="flex items-center" style={{ gap: 8, fontSize: 12, lineHeight: 1.5 }}>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: 18, height: 18, borderRadius: '50%', background: st.bg, color: st.color, flex: '0 0 auto',
+              }}>
+                {st.icon}
+              </span>
+              <span style={{ minWidth: 56, fontWeight: 600, color: '#3A3D45', flex: '0 0 auto' }}>
+                {AGENT_NODE_LABEL[s.node] || s.node}
+              </span>
+              <span style={{ color: '#6B6E76' }}>{s.detail}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 const SKILL_PILL: Record<string, { label: string; bg: string; color: string; icon: React.ReactNode }> = {
   time: { label: '时间解析增强', bg: '#E8F4FD', color: '#1677FF', icon: <Clock size={11} /> },
@@ -586,6 +655,9 @@ function DraftConfirmCard({ message, onConfirm }: {
           固定口径过滤：{message.filters.join('；')}
         </div>
       )}
+
+      {/* 多 Agent 协作轨迹（仅多 Agent 链路返回时显示） */}
+      <AgentTraceBar message={message} />
 
       {/* SQL 草案 */}
       <SQLBlock sql={message.sql || ''} variant="experiment" label="SQL 草案（待您确认，尚未执行）" defaultOpen />

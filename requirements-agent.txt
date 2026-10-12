@@ -1,0 +1,15 @@
+# ==========================================================================
+# 多 Agent 编排增量依赖（方向一：Intent → Matcher → Generator → Critic）
+#
+# 说明：
+# - 线上部署依赖仍以 requirements.txt（flask / flask-cors / gunicorn）为准，
+#   本文件只是「多 Agent 重构」的增量依赖，二者互不影响。
+# - 节点内部复用项目既有 LLMClient / SQLExecutor / SemanticLayer（urllib 直连，
+#   不依赖 langchain 的模型封装），因此这里只需要 langgraph 本身做图编排。
+# - 固定 0.2 线以兼容 Python 3.9（langgraph 0.3+ 对解释器版本要求更高）。
+#
+# 安装（建议用独立虚拟环境，避免污染系统 Python）：
+#   python3 -m venv .venv-agent
+#   .venv-agent/bin/pip install -r requirements-agent.txt
+# ==========================================================================
+langgraph>=0.2,<0.3

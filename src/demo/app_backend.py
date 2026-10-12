@@ -1267,12 +1267,37 @@ def _chat_analysis_block(question, columns, rows, time_range, plan, bank_fallbac
     }
 
 
+# 判定为「真实 LLM 生成」的 sql_source（审计/前端据此区分真实与兜底；多 Agent 图亦计入真实）
+_REAL_SQL_SOURCES = ("semantic-llm", "llm", "agent-graph-llm")
+
+
+def _chat_sql_via_agent_graph(question, history):
+    """走多 Agent 协作图（Intent→Matcher→Generator→Critic）生成【草案】。
+
+    plan 阶段 execute=False：Critic 只做静态审查，全程不执行 SQL，符合「只生成不执行」
+    硬约束。任何异常（如真实 LLM 不可用、依赖缺失）直接向上抛，由接口层捕获后回退单体链路。
+    """
+    from src.agent_graph import run_pipeline
+    return run_pipeline(question, history=history, execute=False)
+
+
+def _ent_sql_via_agent_graph(question, fs_schema, history):
+    """风神数据集走多 Agent 协作图生成【草案】（与本地问数同拓扑、换风神 deps）。
+
+    图内 execute_in_critic=False：风神 QPM≤3，真实取数保留在用户「确认」环节；
+    Critic 只做风神方言静态审查（表名/字段ID/分区宏/预聚合）。异常向上抛由接口层回退。
+    """
+    from src.agent_graph.fengshen import run_fengshen_pipeline
+    return run_fengshen_pipeline(question, fs_schema, history=history)
+
+
 @app.route("/api/chat/plan", methods=["POST"])
 def api_chat_plan():
     """分阶段问数 · 阶段一：需求理解 + SQL 草案。
 
     硬约束：本接口【只生成不执行】——需求识别为纯语义匹配，SQL 草案走
-    experiment_system.run(execute=False) / 内置题库，全程不调用 SQLExecutor。
+    experiment_system.run(execute=False) / 多 Agent 图 / 内置题库，全程不调用 SQLExecutor。
+    pipeline 选择：请求体 pipeline 或环境变量 SQL_PIPELINE（agent_graph | single，默认 single）。
     """
     body = request.get_json(silent=True) or {}
     question = (body.get("question") or "").strip()
@@ -1281,8 +1306,28 @@ def api_chat_plan():
     history = body.get("history") or []
     try:
         matched, time_range, dims, clarifications, assumptions = _ent_detect_requirement(question)
-        # 注意：_ent_build_sql_draft 内部对 LLM 路径使用 execute=False，不触碰数据库
-        sql_draft, sql_source = _ent_build_sql_draft(question, history=history, dims=dims)
+
+        # SQL 草案生成链路：多 Agent 协作图（agent_graph）或单体 Prompt（single，默认）。
+        # 多 Agent 图任何异常都诚实回退单体链路，保证问数接口可用性不受影响。
+        pipeline = str(body.get("pipeline") or os.environ.get("SQL_PIPELINE", "single")).strip().lower()
+        agent_trace, agent_passed, agent_repaired, graph_backend = None, None, False, None
+        if pipeline == "agent_graph":
+            try:
+                ag = _chat_sql_via_agent_graph(question, history)
+                sql_draft, sql_source = ag["generated_sql"], ag["sql_source"]
+                agent_trace = ag.get("trace")
+                agent_passed = ag.get("agent_passed")
+                agent_repaired = ag.get("repaired")
+                graph_backend = ag.get("graph_backend")
+            except Exception as e:
+                print(f"[chat.plan] 多 Agent 图失败，回退单体链路: {type(e).__name__}: {e}", flush=True)
+                sql_draft, sql_source = _ent_build_sql_draft(question, history=history, dims=dims)
+                agent_trace = [{"node": "pipeline", "status": "fallback",
+                                "detail": f"多 Agent 图不可用，已回退单体：{type(e).__name__}"}]
+                graph_backend = "fallback"
+        else:
+            # 注意：_ent_build_sql_draft 内部对 LLM 路径使用 execute=False，不触碰数据库
+            sql_draft, sql_source = _ent_build_sql_draft(question, history=history, dims=dims)
 
         plan_id = "cplan_" + _uuid.uuid4().hex[:12]
         plan = {
@@ -1297,6 +1342,11 @@ def api_chat_plan():
             "clarification_questions": clarifications,
             "assumptions": assumptions,
             "filters": list(_CHAT_FIXED_FILTERS),
+            "pipeline": pipeline,
+            "agent_trace": agent_trace,
+            "agent_passed": agent_passed,
+            "agent_repaired": agent_repaired,
+            "graph_backend": graph_backend,
             "created_at": time.time(),
         }
         _cache_plan(_CHAT_PLANS, plan, _ENT_PLANS_MAX, _ENT_PLAN_TTL)
@@ -1307,16 +1357,17 @@ def api_chat_plan():
                 _audit.EVENT_CHAT_PLAN, result=_audit.RESULT_PENDING,
                 question=question, datasource="currentLocal",
                 staged_confirmed=False, sql_source=sql_source or "unknown",
-                # 草案只有出自真实语义 LLM 才算「真实」；题库/维度模板/兜底均标注为兜底
-                mock_hit=(sql_source not in ("semantic-llm", "llm")),
+                # 草案只有出自真实语义 LLM（含多 Agent 图真实模型）才算「真实」；题库/模板/离线 Mock 均标注为兜底
+                mock_hit=(sql_source not in _REAL_SQL_SOURCES),
                 needs_clarification=len(clarifications) > 0,
+                pipeline=pipeline,
                 **_audit.sql_preview(sql_draft),
             )
         except Exception:
             pass
-        _log("chat.plan", sql_source=sql_source or "unknown",
+        _log("chat.plan", sql_source=sql_source or "unknown", pipeline=pipeline,
              clarify=("是" if clarifications else "否"),
-             draft="真实LLM" if sql_source in ("semantic-llm", "llm") else "题库/模板兜底")
+             draft="真实LLM" if sql_source in _REAL_SQL_SOURCES else "题库/模板/离线Mock")
 
         return jsonify({
             "success": True,
@@ -1332,6 +1383,11 @@ def api_chat_plan():
             "filters": list(_CHAT_FIXED_FILTERS),
             "sql_draft": sql_draft,
             "sql_source": sql_source,
+            "pipeline": pipeline,
+            "agent_trace": agent_trace,
+            "agent_passed": agent_passed,
+            "agent_repaired": agent_repaired,
+            "graph_backend": graph_backend,
             "dataset": dict(_CHAT_DATASET),
         })
     except Exception as e:
@@ -1906,6 +1962,11 @@ def api_ent_plan():
 
         # 选中风神真实数据集时：拉取该表 schema，让 LLM 生成 `[数据集]/[字段ID]` 风格 SQL；
         # 无 dataset_id / schema 为 Mock / LLM 失败时，回退原通用草案逻辑。
+        # pipeline=agent_graph 时改走多 Agent 协作图（同 Intent→Matcher→Generator→Critic
+        # 拓扑，换风神 deps；图内只静态审查不执行），任何异常逐级回退：多Agent图 →
+        # 单体风神 schema LLM → 通用草案，保证接口可用。
+        pipeline = str(body.get("pipeline") or os.environ.get("SQL_PIPELINE", "single")).strip().lower()
+        agent_trace, agent_passed, agent_repaired, graph_backend = None, None, False, None
         sql_draft, sql_source = "", ""
         fs_schema = None
         ds_id_str = str(dataset_id) if dataset_id else ""
@@ -1916,11 +1977,26 @@ def api_ent_plan():
                 print(f"[ent.plan] 风神 schema 获取失败，回退通用草案: {e}", flush=True)
                 fs_schema = None
         if fs_schema and not fs_schema.get("mock") and fs_schema.get("columns"):
-            try:
-                sql_draft, sql_source = _ent_build_fengshen_sql(question, fs_schema, history)
-            except Exception as e:
-                print(f"[ent.plan] 风神 schema SQL 生成失败，回退通用草案: {e}", flush=True)
-                sql_draft, sql_source = "", ""
+            if pipeline == "agent_graph":
+                try:
+                    ag = _ent_sql_via_agent_graph(question, fs_schema, history)
+                    sql_draft, sql_source = ag["generated_sql"], ag["sql_source"]
+                    agent_trace = ag.get("trace")
+                    agent_passed = ag.get("agent_passed")
+                    agent_repaired = ag.get("repaired")
+                    graph_backend = ag.get("graph_backend")
+                except Exception as e:
+                    print(f"[ent.plan] 风神多 Agent 图失败，回退单体链路: {type(e).__name__}: {e}", flush=True)
+                    agent_trace = [{"node": "pipeline", "status": "fallback",
+                                    "detail": f"风神多 Agent 图不可用，已回退单体：{type(e).__name__}"}]
+                    graph_backend = "fallback"
+                    sql_draft, sql_source = "", ""
+            if not sql_draft:
+                try:
+                    sql_draft, sql_source = _ent_build_fengshen_sql(question, fs_schema, history)
+                except Exception as e:
+                    print(f"[ent.plan] 风神 schema SQL 生成失败，回退通用草案: {e}", flush=True)
+                    sql_draft, sql_source = "", ""
         if not sql_draft:
             sql_draft, sql_source = _ent_build_sql_draft(question, history, dims)
 
@@ -1938,6 +2014,11 @@ def api_ent_plan():
             "dimensions": dims,
             "clarification_questions": clarifications,
             "assumptions": assumptions,
+            "pipeline": pipeline,
+            "agent_trace": agent_trace,
+            "agent_passed": agent_passed,
+            "agent_repaired": agent_repaired,
+            "graph_backend": graph_backend,
             "created_at": time.time(),
         }
         _store_ent_plan(plan)
@@ -1949,10 +2030,13 @@ def api_ent_plan():
                 _audit.EVENT_ENT_PLAN, result=_audit.RESULT_PENDING,
                 question=question, datasource=provider.source_type,
                 staged_confirmed=False, sql_source=sql_source or "unknown",
-                # 草案非真实 LLM 生成，或数据源尚未真实连通（待联调）→ 均标注为兜底/演示
-                mock_hit=(sql_source not in ("semantic-llm", "llm")) or (_ent_status != "real_ready"),
+                # 草案非真实 LLM 生成（含多 Agent 图真实模型/风神 schema LLM），
+                # 或数据源尚未真实连通（待联调）→ 均标注为兜底/演示
+                mock_hit=(sql_source not in _REAL_SQL_SOURCES + ("fengshen-schema-llm",))
+                          or (_ent_status != "real_ready"),
                 connection_status=_ent_status,
                 needs_clarification=len(clarifications) > 0,
+                pipeline=pipeline,
                 **_audit.sql_preview(sql_draft),
             )
         except Exception:
@@ -1968,6 +2052,11 @@ def api_ent_plan():
             "question": question,
             "sql_draft": sql_draft,
             "sql_source": sql_source,
+            "pipeline": pipeline,
+            "agent_trace": agent_trace,
+            "agent_passed": agent_passed,
+            "agent_repaired": agent_repaired,
+            "graph_backend": graph_backend,
             "matched_metrics": matched,
             "time_range": time_range,
             "dimensions": dims,

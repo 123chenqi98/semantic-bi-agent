@@ -59,6 +59,19 @@ export interface ChartPendingPayload {
   autoGenerate?: boolean;
 }
 
+export interface AgentTraceStep {
+  node: string;            // intent / matcher / generator / critic / finalize / pipeline
+  status: string;          // ok / degraded / reject / repair / pass / fallback / failed
+  detail: string;
+  ts?: number;
+  round?: number;
+  is_repair?: boolean;
+  repair_count?: number;
+  row_count?: number | null;
+  executed?: boolean;
+  [k: string]: any;
+}
+
 export interface AIMessage {
   id: string;
   type: 'ai';
@@ -92,6 +105,12 @@ export interface AIMessage {
   assumptions?: string[];
   filters?: string[];
   sqlSource?: string;
+  // 多 Agent 协作（Intent→Matcher→Generator→Critic）可观测信息
+  pipeline?: string;                 // single | agent_graph
+  graphBackend?: string | null;      // langgraph | shim | fallback
+  agentTrace?: AgentTraceStep[];
+  agentPassed?: boolean | null;
+  agentRepaired?: boolean;
   datasetName?: string;
   confirmError?: string;
   suggestions?: string[];
